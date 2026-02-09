@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import '../widgets/logo_widget.dart';
 import '../widgets/underlined_text_field.dart';
 import '../widgets/custom_button.dart';
+import '../services/auth_service.dart';
 import 'welcome_page.dart';
 
 class SignUpPage extends StatefulWidget {
@@ -16,7 +18,10 @@ class _SignUpPageState extends State<SignUpPage> {
   final _fullNameController = TextEditingController();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
+  AuthService? _authService;
+  AuthService get authService => _authService ??= AuthService();
   bool _obscurePassword = true;
+  bool _isLoading = false;
 
   @override
   void dispose() {
@@ -26,15 +31,43 @@ class _SignUpPageState extends State<SignUpPage> {
     super.dispose();
   }
 
-  void _handleSignUp() {
-    if (_formKey.currentState!.validate()) {
-      // UI only - no authentication yet
+  Future<void> _handleSignUp() async {
+    if (!_formKey.currentState!.validate()) return;
+    setState(() => _isLoading = true);
+    try {
+      await authService.signUp(
+        fullName: _fullNameController.text,
+        email: _emailController.text,
+        password: _passwordController.text,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Account created. You are signed in.')),
+        );
+      }
+    } on FirebaseAuthException catch (e) {
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+      final message = switch (e.code) {
+        'email-already-in-use' => 'This email is already registered.',
+        'invalid-email' => 'Invalid email address.',
+        'weak-password' => 'Password is too weak.',
+        _ => e.message ?? 'Sign up failed. Please try again.',
+      };
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Sign up functionality will be implemented later'),
+        SnackBar(content: Text(message), backgroundColor: Theme.of(context).colorScheme.error),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(e.toString().replaceFirst(RegExp(r'^Exception: '), '')),
+          backgroundColor: Theme.of(context).colorScheme.error,
         ),
       );
     }
+    if (mounted) setState(() => _isLoading = false);
   }
 
   @override
@@ -191,10 +224,10 @@ class _SignUpPageState extends State<SignUpPage> {
                 ),
                 // Sign Up Button
                 CustomButton(
-                  text: 'SignUp',
+                  text: _isLoading ? 'Creating account…' : 'SignUp',
                   backgroundColor: const Color(0xFFC8E6C9), // Light Green
                   textColor: const Color(0xFF1B5E20), // Dark Green Text
-                  onPressed: _handleSignUp,
+                  onPressed: _isLoading ? null : _handleSignUp,
                 ),
                 const SizedBox(height: 24),
                 // Terms & Conditions Footer

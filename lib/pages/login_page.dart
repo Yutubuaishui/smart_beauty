@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import '../widgets/logo_widget.dart';
 import '../widgets/underlined_text_field.dart';
 import '../widgets/custom_button.dart';
+import '../services/auth_service.dart';
 import 'welcome_page.dart';
 
 class LoginPage extends StatefulWidget {
@@ -15,7 +17,10 @@ class _LoginPageState extends State<LoginPage> {
   final _formKey = GlobalKey<FormState>();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
+  AuthService? _authService;
+  AuthService get authService => _authService ??= AuthService();
   bool _obscurePassword = true;
+  bool _isLoading = false;
 
   @override
   void dispose() {
@@ -24,15 +29,44 @@ class _LoginPageState extends State<LoginPage> {
     super.dispose();
   }
 
-  void _handleLogin() {
-    if (_formKey.currentState!.validate()) {
-      // UI only - no authentication yet
+  Future<void> _handleLogin() async {
+    if (!_formKey.currentState!.validate()) return;
+    setState(() => _isLoading = true);
+    try {
+      await authService.login(
+        email: _emailController.text,
+        password: _passwordController.text,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Signed in successfully')),
+        );
+      }
+    } on FirebaseAuthException catch (e) {
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+      final message = switch (e.code) {
+        'user-not-found' => 'No account found for this email.',
+        'wrong-password' => 'Wrong password.',
+        'invalid-credential' => 'Invalid email or password.',
+        'invalid-email' => 'Invalid email address.',
+        'user-disabled' => 'This account has been disabled.',
+        _ => e.message ?? 'Login failed. Please try again.',
+      };
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Login functionality will be implemented later'),
+        SnackBar(content: Text(message), backgroundColor: Theme.of(context).colorScheme.error),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(e.toString().replaceFirst(RegExp(r'^Exception: '), '')),
+          backgroundColor: Theme.of(context).colorScheme.error,
         ),
       );
     }
+    if (mounted) setState(() => _isLoading = false);
   }
 
   @override
@@ -198,9 +232,9 @@ class _LoginPageState extends State<LoginPage> {
                 ),
                 // Login Button
                 CustomButton(
-                  text: 'Login',
+                  text: _isLoading ? 'Signing in…' : 'Login',
                   backgroundColor: const Color(0xFF1A237E), // Dark Navy
-                  onPressed: _handleLogin,
+                  onPressed: _isLoading ? null : _handleLogin,
                 ),
                 const SizedBox(height: 24),
               ],

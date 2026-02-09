@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import '../services/auth_service.dart';
 
-class ProfilePage extends StatelessWidget {
-  const ProfilePage({super.key});
+class AdminDashboardPage extends StatelessWidget {
+  const AdminDashboardPage({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -11,8 +11,15 @@ class ProfilePage extends StatelessWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Profile'),
-        elevation: 0,
+        title: const Text('Admin Dashboard'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.logout),
+            onPressed: () async {
+              await authService.logout();
+            },
+          ),
+        ],
       ),
       body: Center(
         child: Padding(
@@ -21,31 +28,30 @@ class ProfilePage extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Icon(
-                Icons.person,
-                size: 64,
+                Icons.admin_panel_settings,
+                size: 80,
                 color: theme.colorScheme.primary,
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 24),
               Text(
-                'Your Profile',
-                style: theme.textTheme.headlineSmall?.copyWith(
+                'Admin Dashboard',
+                style: theme.textTheme.headlineMedium?.copyWith(
                   fontWeight: FontWeight.bold,
                 ),
               ),
               const SizedBox(height: 8),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 32),
-                child: Text(
-                  'Manage your account settings and preferences',
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                  textAlign: TextAlign.center,
+              Text(
+                'You have admin access.',
+                style: theme.textTheme.bodyLarge?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
                 ),
+                textAlign: TextAlign.center,
               ),
               const SizedBox(height: 32),
               FilledButton.icon(
-                onPressed: () async => await authService.logout(),
+                onPressed: () async {
+                  await authService.logout();
+                },
                 icon: const Icon(Icons.logout),
                 label: const Text('Sign out'),
               ),
