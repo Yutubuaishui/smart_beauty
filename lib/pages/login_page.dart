@@ -5,6 +5,8 @@ import '../widgets/underlined_text_field.dart';
 import '../widgets/custom_button.dart';
 import '../services/auth_service.dart';
 import 'welcome_page.dart';
+// 1. Added the import for the dashboard
+import 'user_dashboard_page.dart'; 
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -31,20 +33,29 @@ class _LoginPageState extends State<LoginPage> {
 
   Future<void> _handleLogin() async {
     if (!_formKey.currentState!.validate()) return;
+  
+    final theme = Theme.of(context);
     setState(() => _isLoading = true);
+    
     try {
+      // 2. Execute Login
       await authService.login(
-        email: _emailController.text,
+        email: _emailController.text.trim(),
         password: _passwordController.text,
       );
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Signed in successfully')),
-        );
-      }
+
+      if (!mounted) return;
+
+      // 3. SUCCESS! Redirect to UserDashboardPage
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (context) => const UserDashboardPage()),
+      );
+
     } on FirebaseAuthException catch (e) {
       if (!mounted) return;
       setState(() => _isLoading = false);
+      
       final message = switch (e.code) {
         'user-not-found' => 'No account found for this email.',
         'wrong-password' => 'Wrong password.',
@@ -53,20 +64,25 @@ class _LoginPageState extends State<LoginPage> {
         'user-disabled' => 'This account has been disabled.',
         _ => e.message ?? 'Login failed. Please try again.',
       };
+      
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(message), backgroundColor: Theme.of(context).colorScheme.error),
+        SnackBar(
+          content: Text(message), 
+          backgroundColor: theme.colorScheme.error, // Fixed: theme needs to be defined
+        ),
       );
     } catch (e) {
       if (!mounted) return;
       setState(() => _isLoading = false);
+      
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(e.toString().replaceFirst(RegExp(r'^Exception: '), '')),
-          backgroundColor: Theme.of(context).colorScheme.error,
+          backgroundColor: theme.colorScheme.error,
         ),
       );
     }
-    if (mounted) setState(() => _isLoading = false);
+    // No longer need to setState isLoading to false here if we redirected
   }
 
   @override

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'pages/auth_wrapper.dart';
 import 'debug_log.dart';
+import 'firebase_options.dart';
 
 /// Initialize Firebase first (with timeout so we don't hang), then runApp so no widget sees [core/no-app].
 void main() async {
@@ -16,8 +17,10 @@ void main() async {
     print('[RBAC] before Firebase.initializeApp');
     debugLog('main.dart', 'before Firebase.initializeApp', {}, hypothesisId: 'H1');
     // #endregion
-    await Firebase.initializeApp().timeout(
-      const Duration(seconds: 5),
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform, // <--- Add this!
+    ).timeout(
+      const Duration(seconds: 10),
       onTimeout: () => throw TimeoutException('Firebase init timeout'),
     );
     // #region agent log

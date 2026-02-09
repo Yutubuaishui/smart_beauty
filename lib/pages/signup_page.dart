@@ -5,6 +5,7 @@ import '../widgets/underlined_text_field.dart';
 import '../widgets/custom_button.dart';
 import '../services/auth_service.dart';
 import 'welcome_page.dart';
+import 'user_dashboard_page.dart'; 
 
 class SignUpPage extends StatefulWidget {
   const SignUpPage({super.key});
@@ -18,8 +19,10 @@ class _SignUpPageState extends State<SignUpPage> {
   final _fullNameController = TextEditingController();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
+  
   AuthService? _authService;
   AuthService get authService => _authService ??= AuthService();
+  
   bool _obscurePassword = true;
   bool _isLoading = false;
 
@@ -33,33 +36,46 @@ class _SignUpPageState extends State<SignUpPage> {
 
   Future<void> _handleSignUp() async {
     if (!_formKey.currentState!.validate()) return;
+    
     setState(() => _isLoading = true);
+    
     try {
+      // 1. Call the Service to handle Auth and Firestore
       await authService.signUp(
-        fullName: _fullNameController.text,
-        email: _emailController.text,
+        fullName: _fullNameController.text.trim(),
+        email: _emailController.text.trim(),
         password: _passwordController.text,
       );
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Account created. You are signed in.')),
-        );
-      }
+
+      if (!mounted) return;
+
+      // 2. SUCCESS! Redirect to Dashboard immediately
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (context) => const UserDashboardPage()),
+      );
+
     } on FirebaseAuthException catch (e) {
       if (!mounted) return;
       setState(() => _isLoading = false);
+      
       final message = switch (e.code) {
         'email-already-in-use' => 'This email is already registered.',
         'invalid-email' => 'Invalid email address.',
         'weak-password' => 'Password is too weak.',
         _ => e.message ?? 'Sign up failed. Please try again.',
       };
+      
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(message), backgroundColor: Theme.of(context).colorScheme.error),
+        SnackBar(
+          content: Text(message), 
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
       );
     } catch (e) {
       if (!mounted) return;
       setState(() => _isLoading = false);
+      
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(e.toString().replaceFirst(RegExp(r'^Exception: '), '')),
@@ -67,7 +83,6 @@ class _SignUpPageState extends State<SignUpPage> {
         ),
       );
     }
-    if (mounted) setState(() => _isLoading = false);
   }
 
   @override
@@ -86,9 +101,7 @@ class _SignUpPageState extends State<SignUpPage> {
           onPressed: () {
             Navigator.pushReplacement(
               context,
-              MaterialPageRoute(
-                builder: (context) => const WelcomePage(),
-              ),
+              MaterialPageRoute(builder: (context) => const WelcomePage()),
             );
           },
         ),
@@ -102,7 +115,6 @@ class _SignUpPageState extends State<SignUpPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const SizedBox(height: 20),
-                // Logo
                 Center(
                   child: LogoWidget(
                     assetPath: 'assets/frontlogo_green.png',
@@ -110,7 +122,6 @@ class _SignUpPageState extends State<SignUpPage> {
                   ),
                 ),
                 const SizedBox(height: 40),
-                // Header
                 Text(
                   "Let's Start",
                   style: theme.textTheme.headlineLarge?.copyWith(
@@ -119,39 +130,28 @@ class _SignUpPageState extends State<SignUpPage> {
                   ),
                 ),
                 const SizedBox(height: 40),
-                // Full Name Field
                 UnderlinedTextField(
                   label: 'Full Name',
                   prefixIcon: Icons.person_outline,
                   controller: _fullNameController,
                   keyboardType: TextInputType.name,
                   validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return 'Please enter your full name';
-                    }
-                    if (value.length < 2) {
-                      return 'Name must be at least 2 characters';
-                    }
+                    if (value == null || value.isEmpty) return 'Please enter your full name';
+                    if (value.length < 2) return 'Name must be at least 2 characters';
                     return null;
                   },
                 ),
-                // Email Field
                 UnderlinedTextField(
                   label: 'Email',
                   prefixIcon: Icons.email_outlined,
                   controller: _emailController,
                   keyboardType: TextInputType.emailAddress,
                   validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return 'Please enter your email';
-                    }
-                    if (!value.contains('@')) {
-                      return 'Please enter a valid email';
-                    }
+                    if (value == null || value.isEmpty) return 'Please enter your email';
+                    if (!value.contains('@')) return 'Please enter a valid email';
                     return null;
                   },
                 ),
-                // Password Field
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -167,12 +167,8 @@ class _SignUpPageState extends State<SignUpPage> {
                       controller: _passwordController,
                       obscureText: _obscurePassword,
                       validator: (value) {
-                        if (value == null || value.isEmpty) {
-                          return 'Please enter your password';
-                        }
-                        if (value.length < 6) {
-                          return 'Password must be at least 6 characters';
-                        }
+                        if (value == null || value.isEmpty) return 'Please enter your password';
+                        if (value.length < 6) return 'Password must be at least 6 characters';
                         return null;
                       },
                       decoration: InputDecoration(
@@ -183,11 +179,7 @@ class _SignUpPageState extends State<SignUpPage> {
                                 ? Icons.visibility_outlined
                                 : Icons.visibility_off_outlined,
                           ),
-                          onPressed: () {
-                            setState(() {
-                              _obscurePassword = !_obscurePassword;
-                            });
-                          },
+                          onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
                         ),
                         enabledBorder: UnderlineInputBorder(
                           borderSide: BorderSide(
@@ -196,51 +188,26 @@ class _SignUpPageState extends State<SignUpPage> {
                           ),
                         ),
                         focusedBorder: UnderlineInputBorder(
-                          borderSide: BorderSide(
-                            color: theme.colorScheme.primary,
-                            width: 2,
-                          ),
+                          borderSide: BorderSide(color: theme.colorScheme.primary, width: 2),
                         ),
-                        errorBorder: UnderlineInputBorder(
-                          borderSide: BorderSide(
-                            color: theme.colorScheme.error,
-                            width: 1.5,
-                          ),
-                        ),
-                        focusedErrorBorder: UnderlineInputBorder(
-                          borderSide: BorderSide(
-                            color: theme.colorScheme.error,
-                            width: 2,
-                          ),
-                        ),
-                        contentPadding: const EdgeInsets.symmetric(
-                          vertical: 12,
-                          horizontal: 4,
-                        ),
+                        contentPadding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
                       ),
                     ),
                     const SizedBox(height: 24),
                   ],
                 ),
-                // Sign Up Button
                 CustomButton(
                   text: _isLoading ? 'Creating account…' : 'SignUp',
-                  backgroundColor: const Color(0xFFC8E6C9), // Light Green
-                  textColor: const Color(0xFF1B5E20), // Dark Green Text
+                  backgroundColor: const Color(0xFFC8E6C9),
+                  textColor: const Color(0xFF1B5E20),
                   onPressed: _isLoading ? null : _handleSignUp,
                 ),
                 const SizedBox(height: 24),
-                // Terms & Conditions Footer
                 Center(
                   child: TextButton(
                     onPressed: () {
-                      // UI only - no functionality yet
                       ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text(
-                            'Terms & Conditions will be implemented later',
-                          ),
-                        ),
+                        const SnackBar(content: Text('Terms & Conditions will be implemented later')),
                       );
                     },
                     child: Text(

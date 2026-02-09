@@ -2,7 +2,6 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/user_model.dart';
 
-/// Handles Firebase Authentication. UI calls this service only.
 class AuthService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -19,17 +18,21 @@ class AuthService {
     required String email,
     required String password,
   }) async {
+    // 1. Create Auth Account
     final credential = await _auth.createUserWithEmailAndPassword(
       email: email.trim(),
       password: password,
     );
+    
     final user = credential.user;
     if (user == null) throw Exception('Account created but user is null');
 
+    // 2. Create Firestore Document immediately
     await _firestore.collection(_usersCollection).doc(user.uid).set({
-      'fullName': fullName.trim(),
-      'email': email.trim(),
-      'role': 'user',
+      'fullName': fullName,
+      'email': user.email,
+      'role': 'user', 
+      'createdAt': FieldValue.serverTimestamp(),
     });
   }
 
