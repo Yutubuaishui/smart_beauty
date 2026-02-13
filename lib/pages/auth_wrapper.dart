@@ -2,7 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+// import 'package:cloud_firestore/cloud_firestore.dart';
 import '../services/auth_service.dart';
 import '../services/role_service.dart';
 import '../debug_log.dart';
@@ -31,43 +31,47 @@ class _AuthWrapperState extends State<AuthWrapper> {
   void initState() {
     super.initState();
     // #region agent log
-    print('[RBAC] AuthWrapper initState');
     debugLog('auth_wrapper.dart', 'initState subscribe authStateChanges', {}, hypothesisId: 'H2');
     // #endregion
     // Defer ALL Firebase access to after first frame so we never throw [core/no-app] during build.
     WidgetsBinding.instance.addPostFrameCallback((_) => _initAuth());
   }
 
-  void _initAuth() {
-    if (!mounted) return;
+  void _initAuth() async {
+    if (!mounted) { return; }
     if (Firebase.apps.isEmpty) {
       // #region agent log
-      print('[RBAC] Firebase.apps.isEmpty, showing welcome');
       debugLog('auth_wrapper.dart', 'Firebase.apps.isEmpty', {}, hypothesisId: 'H2');
       // #endregion
       setState(() => _authResolved = true);
-      Firebase.initializeApp().catchError((_) {}).whenComplete(() {
-        if (!mounted) return;
-        if (Firebase.apps.isEmpty) return;
-        try {
-          final authService = AuthService();
-          _authSub = authService.authStateChanges.listen((user) {
-            if (mounted) setState(() {
+      try {
+        await Firebase.initializeApp();
+      } catch (_) {
+        // ignore initialization errors; we'll stay on the welcome screen
+      }
+      if (!mounted) { return; }
+      if (Firebase.apps.isEmpty) { return; }
+      try {
+        final authService = AuthService();
+        _authSub = authService.authStateChanges.listen((user) {
+          if (mounted) {
+            setState(() {
               _user = user;
               _authResolved = true;
             });
-          });
-        } catch (_) {
-          if (mounted) setState(() => _authResolved = true);
+          }
+        });
+      } catch (_) {
+        if (mounted) {
+          setState(() => _authResolved = true);
         }
-      });
+      }
       return;
     }
     try {
       final authService = AuthService();
       _authSub = authService.authStateChanges.listen((user) {
         // #region agent log
-        print('[RBAC] authStateChanges event uid=${user?.uid}');
         debugLog('auth_wrapper.dart', 'authStateChanges event', {'uid': user?.uid}, hypothesisId: 'H2');
         // #endregion
         if (mounted) {
@@ -78,15 +82,18 @@ class _AuthWrapperState extends State<AuthWrapper> {
         }
       });
     } on FirebaseException catch (e) {
-      if (e.code == 'no-app' && mounted) setState(() => _authResolved = true);
+      if (e.code == 'no-app' && mounted) {
+        setState(() => _authResolved = true);
+      }
     } catch (_) {
-      if (mounted) setState(() => _authResolved = true);
+      if (mounted) {
+        setState(() => _authResolved = true);
+      }
     }
     Future.delayed(_initialTimeout, () {
-      if (!mounted) return;
+      if (!mounted) { return; }
       if (!_authResolved) {
         // #region agent log
-        print('[RBAC] auth timeout, showing welcome');
         debugLog('auth_wrapper.dart', 'auth timeout, showing welcome', {}, hypothesisId: 'H2');
         // #endregion
         setState(() => _authResolved = true);
@@ -103,7 +110,6 @@ class _AuthWrapperState extends State<AuthWrapper> {
   @override
   Widget build(BuildContext context) {
     // #region agent log
-    print('[RBAC] AuthWrapper.build authResolved=$_authResolved uid=${_user?.uid}');
     debugLog('auth_wrapper.dart', 'AuthWrapper.build', {'authResolved': _authResolved, 'uid': _user?.uid}, hypothesisId: 'H2');
     // #endregion
     if (!_authResolved) {
@@ -124,7 +130,6 @@ class _AuthWrapperState extends State<AuthWrapper> {
     }
     if (_user == null) {
       // #region agent log
-      print('[RBAC] showing WelcomePage');
       debugLog('auth_wrapper.dart', 'return WelcomePage', {}, hypothesisId: 'H2');
       // #endregion
       return const WelcomePage();

@@ -191,7 +191,7 @@ class _LoginPageState extends State<LoginPage> {
                         ),
                         enabledBorder: UnderlineInputBorder(
                           borderSide: BorderSide(
-                            color: theme.colorScheme.onSurface.withOpacity(0.3),
+                            color: theme.colorScheme.onSurface.withAlpha((0.3 * 255).round()),
                             width: 1.5,
                           ),
                         ),

@@ -11,7 +11,6 @@ class WelcomePage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     // #region agent log
-    print('[RBAC] WelcomePage.build');
     debugLog('welcome_page.dart', 'WelcomePage.build', {}, hypothesisId: 'H3');
     // #endregion
     final theme = Theme.of(context);

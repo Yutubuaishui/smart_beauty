@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../debug_log.dart';
 
 /// Resolves user role from Firestore. UI calls this service only.
 class RoleService {
@@ -21,7 +22,7 @@ class RoleService {
     return data['role'] as String? ?? 'user';
     
   } catch (e) {
-    print("Error fetching role: $e");
+    debugLog('role_service.dart', 'Error fetching role', {'error': e.toString()});
     return 'user'; // Fallback if anything goes wrong (network, permissions, etc.)
   }
 }

@@ -35,7 +35,7 @@ class ProductCard extends StatelessWidget {
               child: Container(
                 height: 160,
                 width: double.infinity,
-                color: theme.colorScheme.surfaceVariant,
+                color: theme.colorScheme.surfaceContainerHighest,
                 child: product.imageUrl.isNotEmpty
                     ? Image.network(
                         product.imageUrl,

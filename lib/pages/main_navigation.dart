@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'dashboard_page.dart';
+import 'user_dashboard_page.dart';
 import 'smart_advisor_page.dart';
 import 'beauty_bank_page.dart';
 import 'skin_progress_page.dart';
@@ -15,8 +15,8 @@ class MainNavigation extends StatefulWidget {
 class _MainNavigationState extends State<MainNavigation> {
   int _currentIndex = 0;
 
-  final List<Widget> _pages = const [
-    DashboardPage(),
+  final List<Widget> _pages = [
+    UserDashboardPage(),
     SmartAdvisorPage(),
     BeautyBankPage(),
     SkinProgressPage(),

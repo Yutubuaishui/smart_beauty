@@ -8,13 +8,11 @@ import 'firebase_options.dart';
 /// Initialize Firebase first (with timeout so we don't hang), then runApp so no widget sees [core/no-app].
 void main() async {
   // #region agent log
-  print('[RBAC] main entry');
   debugLog('main.dart', 'main entry', {}, hypothesisId: 'H1');
   // #endregion
   WidgetsFlutterBinding.ensureInitialized();
   try {
     // #region agent log
-    print('[RBAC] before Firebase.initializeApp');
     debugLog('main.dart', 'before Firebase.initializeApp', {}, hypothesisId: 'H1');
     // #endregion
     await Firebase.initializeApp(
@@ -24,18 +22,15 @@ void main() async {
       onTimeout: () => throw TimeoutException('Firebase init timeout'),
     );
     // #region agent log
-    print('[RBAC] after Firebase.initializeApp');
     debugLog('main.dart', 'after Firebase.initializeApp', {}, hypothesisId: 'H1');
     // #endregion
   } catch (e, st) {
     // #region agent log
-    print('[RBAC] Firebase.initializeApp error: $e');
     debugLog('main.dart', 'Firebase.initializeApp error', {'error': e.toString(), 'stack': st.toString()}, hypothesisId: 'H1');
     // #endregion
     // Continue so UI still shows; AuthWrapper will see Firebase.apps.isEmpty and show welcome
   }
   // #region agent log
-  print('[RBAC] calling runApp');
   debugLog('main.dart', 'calling runApp', {}, hypothesisId: 'H1');
   // #endregion
   runApp(const SmartBeautyApp());
@@ -90,7 +85,6 @@ class SmartBeautyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     // #region agent log
-    print('[RBAC] SmartBeautyApp.build');
     debugLog('main.dart', 'SmartBeautyApp.build', {}, hypothesisId: 'H4');
     // #endregion
     return MaterialApp(

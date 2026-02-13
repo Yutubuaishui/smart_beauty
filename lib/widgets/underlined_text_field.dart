@@ -45,7 +45,7 @@ class UnderlinedTextField extends StatelessWidget {
             prefixIcon: prefixIcon != null ? Icon(prefixIcon) : null,
             enabledBorder: UnderlineInputBorder(
               borderSide: BorderSide(
-                color: theme.colorScheme.onSurface.withOpacity(0.3),
+                color: theme.colorScheme.onSurface.withAlpha((0.3 * 255).round()),
                 width: 1.5,
               ),
             ),

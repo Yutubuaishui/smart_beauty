@@ -37,12 +37,10 @@ class LogoWidget extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     // #region agent log
-    print('[DEBUG] LogoWidget.build() called with assetPath: $assetPath');
     _debugLog('logo_widget.dart:37', 'LogoWidget.build() entry', {'assetPath': assetPath}, hypothesisId: 'D');
     // #endregion
     
     // #region agent log
-    print('[DEBUG] Loading asset: $assetPath');
     _debugLog('logo_widget.dart:41', 'Loading asset', {'assetPath': assetPath}, hypothesisId: 'D');
     // #endregion
     
