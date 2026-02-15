@@ -13,7 +13,7 @@ class MainNavigation extends StatefulWidget {
 }
 
 class _MainNavigationState extends State<MainNavigation> {
-  int _currentIndex = 0;
+  int _currentIndex = 0;  // Default to SmartAdvisor page (index 1)
 
   final List<Widget> _pages = [
     UserDashboardPage(),

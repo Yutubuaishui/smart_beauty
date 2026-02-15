@@ -1,14 +1,18 @@
-# Project-level configuration.
+# Must be first so project() and policy apply correctly.
 cmake_minimum_required(VERSION 3.14)
+# Let Firebase C++ SDK (and other deps) work with newer CMake; avoids "Compatibility with CMake < 3.5 has been removed" error.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "")
+# Allow linking to target "smart_beauty" defined in runner/ subdirectory.
+cmake_policy(SET CMP0079 NEW)
+
+# Project-level configuration.
 project(smart_beauty LANGUAGES CXX)
 
 # The name of the executable created for the application. Change this to change
 # the on-disk name of your application.
 set(BINARY_NAME "smart_beauty")
 
-# Explicitly opt in to modern CMake behaviors to avoid warnings with recent
-# versions of CMake.
-cmake_policy(VERSION 3.14...3.25)
+
 
 # Define build configuration option.
 get_property(IS_MULTICONFIG GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)

@@ -7,11 +7,10 @@ import '../services/auth_service.dart';
 import '../services/role_service.dart';
 import '../debug_log.dart';
 import 'welcome_page.dart';
-import 'admin_dashboard_page.dart';
-import 'user_dashboard_page.dart';
+import 'main_navigation.dart';
 
-/// Decides which screen to show: Welcome, AdminDashboard, or UserDashboard.
-/// After login, uses RoleService.getUserRole(uid) to navigate.
+/// Decides which screen to show: Welcome or MainNavigation.
+/// MainNavigation includes the navbar and defaults to SmartAdvisorPage.
 /// Uses a short timeout so we never stay on an invisible loading state.
 class AuthWrapper extends StatefulWidget {
   const AuthWrapper({super.key});
@@ -156,11 +155,8 @@ class _AuthWrapperState extends State<AuthWrapper> {
             ),
           );
         }
-        final role = roleSnapshot.data ?? 'user';
-        if (role == 'admin') {
-          return const AdminDashboardPage();
-        }
-        return const UserDashboardPage();
+        // Show MainNavigation with navbar for all authenticated users
+        return const MainNavigation();
       },
     );
   }

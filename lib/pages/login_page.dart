@@ -5,8 +5,7 @@ import '../widgets/underlined_text_field.dart';
 import '../widgets/custom_button.dart';
 import '../services/auth_service.dart';
 import 'welcome_page.dart';
-// 1. Added the import for the dashboard
-import 'user_dashboard_page.dart'; 
+import 'main_navigation.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -46,10 +45,10 @@ class _LoginPageState extends State<LoginPage> {
 
       if (!mounted) return;
 
-      // 3. SUCCESS! Redirect to UserDashboardPage
+      // 3. SUCCESS! Redirect to main navigation (Smart Advisor tab by default)
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (context) => const UserDashboardPage()),
+        MaterialPageRoute(builder: (context) => const MainNavigation()),
       );
 
     } on FirebaseAuthException catch (e) {
