@@ -11,13 +11,8 @@ import '../models/makeup_product.dart';
 import '../services/makeup_api_service.dart';
 import '../services/cosmetic_recommender_service.dart';
 
-enum MakeupStep {
-  foundation,
-  settingSpray,
-  eyebrow,
-  eyeshadow,
-  lipstick,
-}
+// Setting powder removed — no visual overlay possible.
+enum MakeupStep { foundation, eyebrow, eyeshadow, lipstick }
 
 class SmartAdvisorPage extends StatefulWidget {
   const SmartAdvisorPage({super.key});
@@ -37,39 +32,40 @@ class _SmartAdvisorPageState extends State<SmartAdvisorPage>
   List<MakeupProduct> _lipstickProducts = [];
   List<MakeupProduct> _eyebrowProducts = [];
   List<MakeupProduct> _eyeshadowProducts = [];
-  List<MakeupProduct> _settingProducts = [];
 
   bool _isLoadingProducts = true;
   String? _productError;
   bool _cameraUnavailable = false;
 
+  // All selected colours persist across steps
   MakeupColorOption? _selectedFoundationColor;
   MakeupProduct? _selectedFoundationProduct;
-
   MakeupColorOption? _selectedLipstickColor;
   MakeupProduct? _selectedLipstickProduct;
-
   MakeupColorOption? _selectedEyebrowColor;
   MakeupProduct? _selectedEyebrowProduct;
+  MakeupColorOption? _selectedEyeshadowColor;
+  MakeupProduct? _selectedEyeshadowProduct;
 
   MakeupStep _currentStep = MakeupStep.foundation;
   late final AnimationController _tutorialController;
 
-  /// Detected face with contours (used to draw makeup fixed to the real face). ML Kit.
+  // Face detection
   Face? _detectedFace;
-  /// Size of the image the face was detected in (for correct coordinate mapping).
   Size? _detectedImageSize;
-  /// When ML Kit is not available (e.g. Windows), TFLite face detection result.
+  // Sensor rotation reported by camera (0, 90, 180, 270)
+  int _sensorRotation = 0;
   Rect? _tfliteFaceRect;
   Size? _tfliteImageSize;
   Timer? _faceDetectionTimer;
   bool _faceDetectionStarted = false;
   tflite.FaceDetector? _tfliteDetector;
+
   final _recommender = CosmeticRecommenderService();
   bool _recommendationRequested = false;
-  // Small vertical offset factor (fraction of display height) to nudge overlay downward on Windows
-  // Increased slightly so the overlay sits lower by default on desktop previews.
-  final double _overlayYOffsetFactor = 0.09;
+
+  bool get _hasFaceDetected =>
+      _detectedFace != null || _tfliteFaceRect != null;
 
   @override
   void initState() {
@@ -78,10 +74,11 @@ class _SmartAdvisorPageState extends State<SmartAdvisorPage>
       vsync: this,
       duration: const Duration(seconds: 2),
     )..repeat(reverse: true);
-
     _setupCamera();
     _loadProducts();
   }
+
+  // ── Camera ───────────────────────────────────────────────────────────────
 
   Future<void> _setupCamera() async {
     try {
@@ -94,61 +91,49 @@ class _SmartAdvisorPageState extends State<SmartAdvisorPage>
         (c) => c.lensDirection == CameraLensDirection.front,
         orElse: () => cameras.first,
       );
-
+      // Store sensor orientation so we can rotate face coordinates correctly
+      _sensorRotation = frontCamera.sensorOrientation;
       final controller = CameraController(
         frontCamera,
         ResolutionPreset.medium,
         enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.jpeg,
       );
-
-      final initializeFuture = controller.initialize();
-
+      final initFuture = controller.initialize();
       setState(() {
         _cameraController = controller;
-        _initializeControllerFuture = initializeFuture;
+        _initializeControllerFuture = initFuture;
       });
     } catch (e) {
-      debugPrint('Error setting up camera: $e');
+      debugPrint('Camera setup error: $e');
       setState(() => _cameraUnavailable = true);
     }
   }
+
+  // ── Products ─────────────────────────────────────────────────────────────
 
   Future<void> _loadProducts() async {
     setState(() {
       _isLoadingProducts = true;
       _productError = null;
     });
-
     try {
       final results = await Future.wait<List<MakeupProduct>>([
         _makeupApi.fetchProductsByType('foundation'),
         _makeupApi.fetchProductsByType('lipstick'),
         _makeupApi.fetchProductsByType('eyebrow'),
-        _makeupApi.fetchProductsByType('palette'),
-        _makeupApi.fetchProductsByType('setting powder'),
+        _makeupApi.fetchProductsByType('eyeshadow'),
       ]);
-
-      debugPrint('Loaded products: foundation=${results[0].length}, lipstick=${results[1].length}, eyebrow=${results[2].length}, palette=${results[3].length}, setting_powder=${results[4].length}');
-
       setState(() {
         _foundationProducts = results[0];
-        _lipstickProducts = results[1].isEmpty
-            ? results[0] // fallback: reuse foundation list if lipstick missing
-            : results[1];
-        _eyebrowProducts = results[2].isEmpty
-            ? results[0] // fallback: reuse foundation list if eyebrow missing
-            : results[2];
-        _eyeshadowProducts = results[3].isEmpty
-            ? results[0]
-            : results[3];
-        _settingProducts = results[4].isEmpty
-            ? results[0]
-            : results[4];
+        _lipstickProducts = results[1].isEmpty ? results[0] : results[1];
+        _eyebrowProducts = results[2].isEmpty ? results[0] : results[2];
+        _eyeshadowProducts = results[3].isEmpty ? results[0] : results[3];
         _isLoadingProducts = false;
       });
     } catch (e) {
       setState(() {
-        _productError = 'Failed to load makeup suggestions. Please try again.';
+        _productError = 'Failed to load products. Please retry.';
         _isLoadingProducts = false;
       });
     }
@@ -163,46 +148,50 @@ class _SmartAdvisorPageState extends State<SmartAdvisorPage>
     super.dispose();
   }
 
+  // ── Face detection ────────────────────────────────────────────────────────
+
   void _startFaceDetectionIfReady() {
     if (_faceDetectionStarted || _cameraController == null) return;
-    final ctrl = _cameraController!;
-    if (!ctrl.value.isInitialized) return;
+    if (!_cameraController!.value.isInitialized) return;
     _faceDetectionStarted = true;
-    _faceDetectionTimer = Timer.periodic(const Duration(milliseconds: 2500), (_) => _detectFace());
+    _faceDetectionTimer = Timer.periodic(
+      const Duration(milliseconds: 2500),
+      (_) => _detectFace(),
+    );
   }
 
   Future<void> _detectFace() async {
-    final controller = _cameraController;
-    if (controller == null || !controller.value.isInitialized || !mounted) return;
+    final ctrl = _cameraController;
+    if (ctrl == null || !ctrl.value.isInitialized || !mounted) return;
     XFile? file;
-    try {
-      file = await controller.takePicture();
-    } catch (_) {
-      return;
-    }
+    try { file = await ctrl.takePicture(); } catch (_) { return; }
     if (!mounted) return;
 
     try {
       final inputImage = InputImage.fromFilePath(file.path);
       final detector = FaceDetector(
         options: FaceDetectorOptions(
-          performanceMode: FaceDetectorMode.fast,
-          minFaceSize: 0.15,
+          performanceMode: FaceDetectorMode.accurate,
+          minFaceSize: 0.10,
           enableContours: true,
-          enableLandmarks: false,
+          enableLandmarks: true,
         ),
       );
       final faces = await detector.processImage(inputImage);
       await detector.close();
       if (!mounted) return;
+
       if (faces.isNotEmpty) {
         final face = faces.first;
+        // Prefer metadata size; fall back to decoding the JPEG
         var imgSize = inputImage.metadata?.size;
         if (imgSize == null) {
           try {
             final bytes = await file.readAsBytes();
             final decoded = img.decodeImage(bytes);
-            if (decoded != null) imgSize = Size(decoded.width.toDouble(), decoded.height.toDouble());
+            if (decoded != null) {
+              imgSize = Size(decoded.width.toDouble(), decoded.height.toDouble());
+            }
           } catch (_) {}
         }
         setState(() {
@@ -213,11 +202,12 @@ class _SmartAdvisorPageState extends State<SmartAdvisorPage>
         });
         _runRecommendationIfNeeded(file, _toRect(face.boundingBox), imgSize);
         return;
+      } else {
+        if (mounted) setState(() { _detectedFace = null; _detectedImageSize = null; });
       }
     } catch (_) {
-      // ML Kit not available (e.g. Windows) or failed; try TFLite.
+      // ML Kit not available — fall through to TFLite
     }
-
     await _detectFaceTflite(file);
   }
 
@@ -228,15 +218,15 @@ class _SmartAdvisorPageState extends State<SmartAdvisorPage>
       _tfliteDetector ??= tflite.FaceDetector();
       try {
         await _tfliteDetector!.initialize(model: tflite.FaceDetectionModel.frontCamera);
-      } catch (_) {
-        return;
-      }
+      } catch (_) { return; }
       final faces = await _tfliteDetector!.detectFaces(bytes);
       if (!mounted) return;
       if (faces.isNotEmpty) {
         final face = faces.first;
         final decoded = img.decodeImage(bytes);
-        final imgSize = decoded != null ? Size(decoded.width.toDouble(), decoded.height.toDouble()) : null;
+        final imgSize = decoded != null
+            ? Size(decoded.width.toDouble(), decoded.height.toDouble())
+            : null;
         if (imgSize == null) return;
         final rect = _toRect(face.boundingBox);
         setState(() {
@@ -246,10 +236,10 @@ class _SmartAdvisorPageState extends State<SmartAdvisorPage>
           _tfliteImageSize = imgSize;
         });
         _runRecommendationIfNeeded(file, rect, imgSize);
+      } else {
+        if (mounted) setState(() { _tfliteFaceRect = null; _tfliteImageSize = null; });
       }
-    } catch (_) {
-      // TFLite not available or failed.
-    }
+    } catch (_) {}
   }
 
   Future<void> _runRecommendationIfNeeded(XFile file, Rect faceRect, Size? imageSize) async {
@@ -264,15 +254,15 @@ class _SmartAdvisorPageState extends State<SmartAdvisorPage>
       final browRecs = await _recommender.recommendEyebrow(skinHex, limit: 2);
       if (!mounted) return;
       setState(() {
-        if (foundationRecs.isNotEmpty) {
+        if (foundationRecs.isNotEmpty && _selectedFoundationProduct == null) {
           _selectedFoundationProduct = foundationRecs.first.product;
           _selectedFoundationColor = foundationRecs.first.color;
         }
-        if (lipRecs.isNotEmpty) {
+        if (lipRecs.isNotEmpty && _selectedLipstickProduct == null) {
           _selectedLipstickProduct = lipRecs.first.product;
           _selectedLipstickColor = lipRecs.first.color;
         }
-        if (browRecs.isNotEmpty) {
+        if (browRecs.isNotEmpty && _selectedEyebrowProduct == null) {
           _selectedEyebrowProduct = browRecs.first.product;
           _selectedEyebrowColor = browRecs.first.color;
         }
@@ -280,6 +270,8 @@ class _SmartAdvisorPageState extends State<SmartAdvisorPage>
     } catch (_) {}
     _recommendationRequested = false;
   }
+
+  // ── Product selection ─────────────────────────────────────────────────────
 
   void _onSelectProduct(MakeupProduct product, MakeupColorOption? color) {
     setState(() {
@@ -296,131 +288,327 @@ class _SmartAdvisorPageState extends State<SmartAdvisorPage>
           _selectedEyebrowProduct = product;
           _selectedEyebrowColor = color;
           break;
-        case MakeupStep.settingSpray:
         case MakeupStep.eyeshadow:
-          // For now we only visualize foundation / lips / brows.
+          _selectedEyeshadowProduct = product;
+          _selectedEyeshadowColor = color;
           break;
       }
     });
-    debugPrint('Selected product: ${product.name}, color: ${color?.name} ${color?.hexValue}');
   }
 
   Color? _parseHexColor(String? hex) {
     if (hex == null || hex.isEmpty) return null;
-    var cleaned = hex.toUpperCase().replaceAll('#', '');
-    if (cleaned.length == 3) {
-      cleaned = cleaned.split('').map((c) => '$c$c').join();
-    }
-    if (cleaned.length == 6) {
-      cleaned = 'FF$cleaned';
-    }
-    if (cleaned.length != 8) return null;
-    try {
-      return Color(int.parse(cleaned, radix: 16));
-    } catch (_) {
-      return null;
-    }
+    var c = hex.toUpperCase().replaceAll('#', '');
+    if (c.length == 3) c = c.split('').map((x) => '$x$x').join();
+    if (c.length == 6) c = 'FF$c';
+    if (c.length != 8) return null;
+    try { return Color(int.parse(c, radix: 16)); } catch (_) { return null; }
   }
 
-  Color? get _foundationColor =>
-      _parseHexColor(_selectedFoundationColor?.hexValue);
-
-  Color? get _lipstickColor =>
-      _parseHexColor(_selectedLipstickColor?.hexValue);
-
-  Color? get _eyebrowColor =>
-      _parseHexColor(_selectedEyebrowColor?.hexValue);
+  Color? get _foundationColor => _parseHexColor(_selectedFoundationColor?.hexValue);
+  Color? get _lipstickColor   => _parseHexColor(_selectedLipstickColor?.hexValue);
+  Color? get _eyebrowColor    => _parseHexColor(_selectedEyebrowColor?.hexValue);
+  Color? get _eyeshadowColor  => _parseHexColor(_selectedEyeshadowColor?.hexValue);
 
   void _goToNextStep() {
     setState(() {
       switch (_currentStep) {
-        case MakeupStep.foundation:
-          _currentStep = MakeupStep.settingSpray;
-          break;
-        case MakeupStep.settingSpray:
-          _currentStep = MakeupStep.eyebrow;
-          break;
-        case MakeupStep.eyebrow:
-          _currentStep = MakeupStep.eyeshadow;
-          break;
-        case MakeupStep.eyeshadow:
-          _currentStep = MakeupStep.lipstick;
-          break;
-        case MakeupStep.lipstick:
-          _currentStep = MakeupStep.foundation;
-          break;
+        case MakeupStep.foundation: _currentStep = MakeupStep.eyebrow; break;
+        case MakeupStep.eyebrow:    _currentStep = MakeupStep.eyeshadow; break;
+        case MakeupStep.eyeshadow:  _currentStep = MakeupStep.lipstick; break;
+        case MakeupStep.lipstick:   _currentStep = MakeupStep.foundation; break;
       }
     });
   }
 
+  // ── Coordinate mapping ────────────────────────────────────────────────────
+
+  /// Maps an image-space rect to display-space, accounting for:
+  ///  • Camera sensor rotation (the JPEG is rotated relative to display)
+  ///  • BoxFit.cover scaling (CameraPreview fills the panel)
+  ///
+  /// [imgSize] is the JPEG pixel dimensions BEFORE any rotation is applied.
+  /// [rotation] is the sensor orientation (0 / 90 / 180 / 270).
+  Rect _toDisplayCover(
+    Rect ir,
+    Size imgSize,
+    double dW,
+    double dH,
+    int rotation,
+  ) {
+    // 1. Rotate the point / rect to match how the JPEG is actually oriented.
+    //    ML Kit returns coords in the rotated (display-oriented) image space,
+    //    but the JPEG may be stored in sensor space. We need to normalise.
+    //    For front cameras Flutter typically receives the image already rotated
+    //    by the sensor orientation, so the stored JPEG is in display orientation.
+    //    Hence imgSize.width/height already match display orientation width/height.
+    //    No additional rotation transform is needed here — we just do cover-fit.
+
+    if (imgSize.width <= 0 || imgSize.height <= 0) return ir;
+
+    // 2. Cover-fit scale: use the axis that fills the panel completely
+    final scaleX = dW / imgSize.width;
+    final scaleY = dH / imgSize.height;
+    final scale = max(scaleX, scaleY);
+
+    // 3. Crop offsets (negative means the image extends beyond the display)
+    final ox = (dW - imgSize.width * scale) / 2;
+    final oy = (dH - imgSize.height * scale) / 2;
+
+    return Rect.fromLTRB(
+      (ir.left  * scale + ox).clamp(0.0, dW),
+      (ir.top   * scale + oy).clamp(0.0, dH),
+      (ir.right * scale + ox).clamp(0.0, dW),
+      (ir.bottom * scale + oy).clamp(0.0, dH),
+    );
+  }
+
+  List<Offset>? _mlkitContour(
+    Face face,
+    FaceContourType type,
+    Size imgSize,
+    double dW,
+    double dH,
+  ) {
+    final contour = face.contours[type];
+    if (contour == null || contour.points.isEmpty) return null;
+    if (imgSize.width <= 0 || imgSize.height <= 0) return null;
+    final scale = max(dW / imgSize.width, dH / imgSize.height);
+    final ox = (dW - imgSize.width * scale) / 2;
+    final oy = (dH - imgSize.height * scale) / 2;
+    return contour.points
+        .map((p) => Offset(p.x.toDouble() * scale + ox,
+                           p.y.toDouble() * scale + oy))
+        .toList();
+  }
+
+  // ── Synthetic contours for guide oval / TFLite ────────────────────────────
+
+  void _buildSyntheticContours(
+    Rect r, {
+    required List<Offset> faceContour,
+    required List<Offset> leftBrowTop,
+    required List<Offset> leftBrowBottom,
+    required List<Offset> rightBrowTop,
+    required List<Offset> rightBrowBottom,
+    required List<Offset> upperLipTop,
+    required List<Offset> upperLipBottom,
+    required List<Offset> lowerLipTop,
+    required List<Offset> lowerLipBottom,
+    // Extra contours used for eye-shadow positioning
+    required List<Offset> leftEyeContour,
+    required List<Offset> rightEyeContour,
+  }) {
+    final cx = r.center.dx;
+    final cy = r.center.dy;
+    final rx = r.width / 2;
+    final ry = r.height / 2;
+
+    // Face oval
+    const n = 36;
+    for (var i = 0; i <= n; i++) {
+      final t = (i / n) * 2 * pi;
+      faceContour.add(Offset(cx + rx * cos(t), cy + ry * sin(t)));
+    }
+
+    // Eyebrows — ~48 % up from centre
+    final browCY = cy - ry * 0.46;
+    final browH  = ry * 0.07;
+    leftBrowTop
+      ..add(Offset(cx - rx * 0.58, browCY + browH * 0.4))
+      ..add(Offset(cx - rx * 0.16, browCY - browH * 0.5));
+    leftBrowBottom
+      ..add(Offset(cx - rx * 0.16, browCY + browH * 0.3))
+      ..add(Offset(cx - rx * 0.58, browCY + browH));
+    rightBrowTop
+      ..add(Offset(cx + rx * 0.16, browCY - browH * 0.5))
+      ..add(Offset(cx + rx * 0.58, browCY + browH * 0.4));
+    rightBrowBottom
+      ..add(Offset(cx + rx * 0.58, browCY + browH))
+      ..add(Offset(cx + rx * 0.16, browCY + browH * 0.3));
+
+    // Eyes (small ovals) — for eyeshadow placement
+    final eyeCY  = cy - ry * 0.28;
+    final eyeW   = rx * 0.36;
+    final eyeH   = ry * 0.12;
+    const eyeN   = 16;
+    for (var i = 0; i <= eyeN; i++) {
+      final t = (i / eyeN) * 2 * pi;
+      leftEyeContour.add(Offset(cx - rx * 0.36 + eyeW / 2 * cos(t),
+                                 eyeCY + eyeH / 2 * sin(t)));
+      rightEyeContour.add(Offset(cx + rx * 0.36 + eyeW / 2 * cos(t),
+                                  eyeCY + eyeH / 2 * sin(t)));
+    }
+
+    // Lips — ~30 % below centre
+    final lipCY = cy + ry * 0.28;
+    final lipW  = rx * 0.46;
+    final lipH  = ry * 0.16;
+    upperLipTop
+      ..add(Offset(cx - lipW,         lipCY))
+      ..add(Offset(cx - lipW * 0.44,  lipCY - lipH * 0.75))
+      ..add(Offset(cx,                lipCY - lipH * 0.30))
+      ..add(Offset(cx + lipW * 0.44,  lipCY - lipH * 0.75))
+      ..add(Offset(cx + lipW,         lipCY));
+    upperLipBottom
+      ..add(Offset(cx + lipW, lipCY))
+      ..add(Offset(cx,        lipCY + lipH * 0.35))
+      ..add(Offset(cx - lipW, lipCY));
+    lowerLipTop
+      ..add(Offset(cx - lipW, lipCY))
+      ..add(Offset(cx,        lipCY + lipH * 0.35))
+      ..add(Offset(cx + lipW, lipCY));
+    lowerLipBottom
+      ..add(Offset(cx + lipW, lipCY))
+      ..add(Offset(cx,        lipCY + lipH))
+      ..add(Offset(cx - lipW, lipCY));
+  }
+
+  // ── Overlay builder ───────────────────────────────────────────────────────
+
+  Widget _buildOverlayHints() {
+    final face = _detectedFace;
+    final imageSize = _detectedImageSize ?? _tfliteImageSize;
+
+    return LayoutBuilder(builder: (context, constraints) {
+      final dW = constraints.maxWidth;
+      final dH = constraints.maxHeight;
+
+      List<Offset>? faceContour;
+      List<Offset>? lbt, lbb, rbt, rbb, ult, ulb, llt, llb;
+      List<Offset>? leftEye, rightEye;
+      Rect? faceBounds;
+
+      if (face != null && imageSize != null) {
+        // ── ML Kit real face ─────────────────────────────────────────────
+        faceBounds = _toDisplayCover(
+            _toRect(face.boundingBox), imageSize, dW, dH, _sensorRotation);
+        faceContour = _mlkitContour(face, FaceContourType.face,        imageSize, dW, dH);
+        lbt = _mlkitContour(face, FaceContourType.leftEyebrowTop,      imageSize, dW, dH);
+        lbb = _mlkitContour(face, FaceContourType.leftEyebrowBottom,   imageSize, dW, dH);
+        rbt = _mlkitContour(face, FaceContourType.rightEyebrowTop,     imageSize, dW, dH);
+        rbb = _mlkitContour(face, FaceContourType.rightEyebrowBottom,  imageSize, dW, dH);
+        ult = _mlkitContour(face, FaceContourType.upperLipTop,         imageSize, dW, dH);
+        ulb = _mlkitContour(face, FaceContourType.upperLipBottom,      imageSize, dW, dH);
+        llt = _mlkitContour(face, FaceContourType.lowerLipTop,         imageSize, dW, dH);
+        llb = _mlkitContour(face, FaceContourType.lowerLipBottom,      imageSize, dW, dH);
+        // Use left/right eye contours for eyeshadow placement
+        leftEye  = _mlkitContour(face, FaceContourType.leftEye,  imageSize, dW, dH);
+        rightEye = _mlkitContour(face, FaceContourType.rightEye, imageSize, dW, dH);
+      } else if (_tfliteFaceRect != null && imageSize != null) {
+        // ── TFLite real face — synthetic ─────────────────────────────────
+        faceBounds = _toDisplayCover(
+            _tfliteFaceRect!, imageSize, dW, dH, _sensorRotation);
+        faceContour = []; lbt=[]; lbb=[]; rbt=[]; rbb=[];
+        ult=[]; ulb=[]; llt=[]; llb=[]; leftEye=[]; rightEye=[];
+        _buildSyntheticContours(faceBounds,
+          faceContour: faceContour, leftBrowTop: lbt, leftBrowBottom: lbb,
+          rightBrowTop: rbt, rightBrowBottom: rbb,
+          upperLipTop: ult, upperLipBottom: ulb,
+          lowerLipTop: llt, lowerLipBottom: llb,
+          leftEyeContour: leftEye, rightEyeContour: rightEye);
+      } else {
+        // ── No face — centred guide oval with full makeup preview ─────────
+        // Use a natural portrait aspect ratio (3:4) for the guide oval.
+        final ovalH = dH * 0.70;
+        final ovalW = ovalH * 0.72; // slightly narrower than tall
+        faceBounds = Rect.fromCenter(
+          center: Offset(dW * 0.5, dH * 0.50),
+          width: ovalW,
+          height: ovalH,
+        );
+        faceContour = []; lbt=[]; lbb=[]; rbt=[]; rbb=[];
+        ult=[]; ulb=[]; llt=[]; llb=[]; leftEye=[]; rightEye=[];
+        _buildSyntheticContours(faceBounds,
+          faceContour: faceContour, leftBrowTop: lbt, leftBrowBottom: lbb,
+          rightBrowTop: rbt, rightBrowBottom: rbb,
+          upperLipTop: ult, upperLipBottom: ulb,
+          lowerLipTop: llt, lowerLipBottom: llb,
+          leftEyeContour: leftEye, rightEyeContour: rightEye);
+      }
+
+      return IgnorePointer(
+        child: CustomPaint(
+          size: Size(dW, dH),
+          painter: _MakeupOverlayPainter(
+            faceContourDisplay: faceContour,
+            leftBrowTop: lbt, leftBrowBottom: lbb,
+            rightBrowTop: rbt, rightBrowBottom: rbb,
+            upperLipTop: ult, upperLipBottom: ulb,
+            lowerLipTop: llt, lowerLipBottom: llb,
+            leftEyeContour: leftEye,
+            rightEyeContour: rightEye,
+            faceBoundsDisplay: faceBounds,
+            foundationColor: _foundationColor,
+            lipstickColor:   _lipstickColor,
+            eyebrowColor:    _eyebrowColor,
+            eyeshadowColor:  _eyeshadowColor,
+            hasFaceDetected: _hasFaceDetected,
+          ),
+        ),
+      );
+    });
+  }
+
+  Rect _toRect(dynamic box) {
+    if (box is Rect) return box;
+    try {
+      return Rect.fromLTRB(
+        (box.left as num).toDouble(), (box.top as num).toDouble(),
+        (box.right as num).toDouble(), (box.bottom as num).toDouble());
+    } catch (_) { return Rect.zero; }
+  }
+
+  // ── Build ─────────────────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Smart Makeup Advisor'),
-        elevation: 0,
-      ),
-      body: Row(
-        children: [
-          // Left: camera + overlay (fixed size area, full face visible)
-          Expanded(
-            flex: 1,
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                _buildCameraPreview(),
-                if (!_cameraUnavailable) ...[
-                  _buildOverlayHints(),
-                  _buildSelectedSummaryChip(theme),
-                ],
-              ],
-            ),
-          ),
-          // Right: steps, products, tutorial
-          Expanded(
-            flex: 1,
-            child: _buildBottomPanel(theme),
-          ),
-        ],
-      ),
+      appBar: AppBar(title: const Text('Smart Makeup Advisor'), elevation: 0),
+      body: Row(children: [
+        Expanded(
+          flex: 1,
+          child: Stack(fit: StackFit.expand, children: [
+            _buildCameraPreview(),
+            _buildOverlayHints(),
+            _buildSelectedSummaryChip(theme),
+          ]),
+        ),
+        Expanded(flex: 1, child: _buildBottomPanel(theme)),
+      ]),
     );
   }
+
+  // ── Camera preview ────────────────────────────────────────────────────────
 
   Widget _buildCameraPreview() {
     if (_cameraUnavailable) {
       return Container(
-        color: Colors.grey[300],
+        color: Colors.grey[900],
         child: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.videocam_off, size: 64, color: Colors.grey),
-              const SizedBox(height: 16),
-              Text(
-                'Camera not available',
-                style: TextStyle(fontSize: 16, color: Colors.grey[700]),
+          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+            const Icon(Icons.videocam_off, size: 64, color: Colors.grey),
+            const SizedBox(height: 16),
+            Text('Camera not available',
+                style: TextStyle(fontSize: 16, color: Colors.grey[400])),
+            const SizedBox(height: 8),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24),
+              child: Text(
+                'Pick products on the right — preview shows on the guide oval.',
+                style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+                textAlign: TextAlign.center,
               ),
-              const SizedBox(height: 8),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 24),
-                child: Text(
-                  'Live camera is supported on Android and iOS. On Windows or web, pick products below to see makeup colours on the overlay.',
-                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-                  textAlign: TextAlign.center,
-                ),
-              ),
-            ],
-          ),
+            ),
+          ]),
         ),
       );
     }
 
-    final controller = _cameraController;
+    final ctrl = _cameraController;
     final initFuture = _initializeControllerFuture;
-
-    if (controller == null || initFuture == null) {
+    if (ctrl == null || initFuture == null) {
       return const Center(child: CircularProgressIndicator());
     }
 
@@ -433,450 +621,109 @@ class _SmartAdvisorPageState extends State<SmartAdvisorPage>
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) _startFaceDetectionIfReady();
         });
-        final aspectRatio = controller.value.aspectRatio;
-        return ClipRRect(
-          borderRadius: const BorderRadius.only(
-            topRight: Radius.circular(24),
-            bottomRight: Radius.circular(24),
-          ),
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              final maxW = constraints.maxWidth;
-              final maxH = constraints.maxHeight;
-              double w;
-              double h;
-              if (maxW / maxH > aspectRatio) {
-                h = maxH;
-                w = maxH * aspectRatio;
-              } else {
-                w = maxW;
-                h = maxW / aspectRatio;
-              }
-              return Align(
-                alignment: Alignment.centerLeft,
-                child: SizedBox(
-                  width: w,
-                  height: h,
-                  child: CameraPreview(controller),
-                ),
-              );
-            },
-          ),
-        );
-      },
-    );
-  }
+        // Wrap in LayoutBuilder so we can constrain to natural aspect ratio
+        // without stretching the preview.
+        return LayoutBuilder(builder: (ctx, constraints) {
+          final previewAspect = ctrl.value.aspectRatio; // width / height
+          final panelW = constraints.maxWidth;
+          final panelH = constraints.maxHeight;
 
-  /// Maps a point from image coordinates to display (panel) coordinates.
-  Offset _imageToDisplay(double ix, double iy, double scale, double offsetY) {
-    return Offset(ix * scale, offsetY + iy * scale);
-  }
-
-  /// Extracts contour points from face and maps to display coordinates.
-  List<Offset>? _contourToDisplay(Face? face, FaceContourType type, double width, double height, Size? imageSize, double scale, double offsetY) {
-    if (face == null || imageSize == null) return null;
-    final contour = face.contours[type];
-    if (contour == null || contour.points.isEmpty) return null;
-    return contour.points.map((p) => _imageToDisplay(p.x.toDouble(), p.y.toDouble(), scale, offsetY)).toList();
-  }
-
-  /// Builds synthetic contour points from a face bounding box (for TFLite / Windows).
-  void _syntheticContoursFromRect(
-    Rect displayRect,
-    List<Offset> faceContour,
-    List<Offset> leftBrowTop,
-    List<Offset> leftBrowBottom,
-    List<Offset> rightBrowTop,
-    List<Offset> rightBrowBottom,
-    List<Offset> upperLipTop,
-    List<Offset> upperLipBottom,
-    List<Offset> lowerLipTop,
-    List<Offset> lowerLipBottom,
-  ) {
-    final cx = displayRect.center.dx;
-    final cy = displayRect.center.dy;
-    final rx = displayRect.width / 2;
-    final ry = displayRect.height / 2;
-    const n = 24;
-    for (var i = 0; i <= n; i++) {
-      final t = (i / n) * 2 * pi;
-      faceContour.add(Offset(cx + rx * cos(t), cy + ry * sin(t)));
-    }
-    final browY = displayRect.top + displayRect.height * 0.22;
-    final browW = displayRect.width * 0.2;
-    final browH = displayRect.height * 0.04;
-    leftBrowTop.addAll([
-      Offset(cx - browW * 1.2, browY),
-      Offset(cx - browW * 0.4, browY - browH),
-    ]);
-    leftBrowBottom.addAll([
-      Offset(cx - browW * 0.4, browY - browH),
-      Offset(cx - browW * 1.2, browY),
-    ]);
-    rightBrowTop.addAll([
-      Offset(cx + browW * 0.4, browY - browH),
-      Offset(cx + browW * 1.2, browY),
-    ]);
-    rightBrowBottom.addAll([
-      Offset(cx + browW * 1.2, browY),
-      Offset(cx + browW * 0.4, browY - browH),
-    ]);
-    final lipY = displayRect.top + displayRect.height * 0.62;
-    final lipW = displayRect.width * 0.25;
-    final lipH = displayRect.height * 0.08;
-    upperLipTop.addAll([
-      Offset(cx - lipW, lipY),
-      Offset(cx, lipY - lipH),
-      Offset(cx + lipW, lipY),
-    ]);
-    upperLipBottom.addAll([
-      Offset(cx + lipW, lipY),
-      Offset(cx, lipY + lipH * 0.5),
-      Offset(cx - lipW, lipY),
-    ]);
-    lowerLipTop.addAll([
-      Offset(cx - lipW, lipY),
-      Offset(cx, lipY + lipH * 0.5),
-      Offset(cx + lipW, lipY),
-    ]);
-    lowerLipBottom.addAll([
-      Offset(cx + lipW, lipY),
-      Offset(cx, lipY + lipH),
-      Offset(cx - lipW, lipY),
-    ]);
-  }
-
-  Widget _buildOverlayHints() {
-    final controller = _cameraController;
-    final previewSize = controller?.value.previewSize;
-    final face = _detectedFace;
-    final imageSize = _detectedImageSize ?? _tfliteImageSize ?? previewSize;
-
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final width = constraints.maxWidth;
-        final height = constraints.maxHeight;
-        double scale = 1;
-        double offsetY = 0;
-
-        if (imageSize != null && imageSize.width > 0 && imageSize.height > 0) {
-          scale = min(width / imageSize.width, height / imageSize.height);
-          final previewH = imageSize.height * scale;
-          offsetY = (height - previewH) / 2;
-        }
-
-        List<Offset>? faceContour;
-        List<Offset>? leftBrowTop;
-        List<Offset>? leftBrowBottom;
-        List<Offset>? rightBrowTop;
-        List<Offset>? rightBrowBottom;
-        List<Offset>? upperLipTop;
-        List<Offset>? upperLipBottom;
-        List<Offset>? lowerLipTop;
-        List<Offset>? lowerLipBottom;
-        Rect? faceBoundsDisplay;
-        bool hasFace = false;
-
-        if (face != null && imageSize != null) {
-          hasFace = true;
-          faceContour = _contourToDisplay(face, FaceContourType.face, width, height, imageSize, scale, offsetY);
-          leftBrowTop = _contourToDisplay(face, FaceContourType.leftEyebrowTop, width, height, imageSize, scale, offsetY);
-          leftBrowBottom = _contourToDisplay(face, FaceContourType.leftEyebrowBottom, width, height, imageSize, scale, offsetY);
-          rightBrowTop = _contourToDisplay(face, FaceContourType.rightEyebrowTop, width, height, imageSize, scale, offsetY);
-          rightBrowBottom = _contourToDisplay(face, FaceContourType.rightEyebrowBottom, width, height, imageSize, scale, offsetY);
-          upperLipTop = _contourToDisplay(face, FaceContourType.upperLipTop, width, height, imageSize, scale, offsetY);
-          upperLipBottom = _contourToDisplay(face, FaceContourType.upperLipBottom, width, height, imageSize, scale, offsetY);
-          lowerLipTop = _contourToDisplay(face, FaceContourType.lowerLipTop, width, height, imageSize, scale, offsetY);
-          lowerLipBottom = _contourToDisplay(face, FaceContourType.lowerLipBottom, width, height, imageSize, scale, offsetY);
-          faceBoundsDisplay = _rectToDisplay(_toRect(face.boundingBox), width, height, imageSize, scale, offsetY);
-        } else if (_tfliteFaceRect != null && imageSize != null) {
-          hasFace = true;
-          faceBoundsDisplay = _rectToDisplay(_tfliteFaceRect!, width, height, imageSize, scale, offsetY);
-          faceContour = [];
-          leftBrowTop = [];
-          leftBrowBottom = [];
-          rightBrowTop = [];
-          rightBrowBottom = [];
-          upperLipTop = [];
-          upperLipBottom = [];
-          lowerLipTop = [];
-          lowerLipBottom = [];
-          _syntheticContoursFromRect(
-            faceBoundsDisplay,
-            faceContour,
-            leftBrowTop,
-            leftBrowBottom,
-            rightBrowTop,
-            rightBrowBottom,
-            upperLipTop,
-            upperLipBottom,
-            lowerLipTop,
-            lowerLipBottom,
-          );
-        } else if (_foundationColor != null || _lipstickColor != null || _eyebrowColor != null) {
-          // No face detected yet: still show makeup at a default position so user can see the effect.
-          final faceRadius = min(width, height) * 0.22;
-          final faceCenterX = width * 0.35;
-          // Nudge the default face position slightly lower so overlay aligns better on desktop.
-          final faceCenterY = height * 0.55;
-          faceBoundsDisplay = Rect.fromCircle(
-            center: Offset(faceCenterX, faceCenterY),
-            radius: faceRadius,
-          );
-          final fc = <Offset>[];
-          final lbt = <Offset>[];
-          final lbb = <Offset>[];
-          final rbt = <Offset>[];
-          final rbb = <Offset>[];
-          final ult = <Offset>[];
-          final ulb = <Offset>[];
-          final llt = <Offset>[];
-          final llb = <Offset>[];
-          _syntheticContoursFromRect(
-            faceBoundsDisplay!,
-            fc,
-            lbt,
-            lbb,
-            rbt,
-            rbb,
-            ult,
-            ulb,
-            llt,
-            llb,
-          );
-          faceContour = fc;
-          leftBrowTop = lbt;
-          leftBrowBottom = lbb;
-          rightBrowTop = rbt;
-          rightBrowBottom = rbb;
-          upperLipTop = ult;
-          upperLipBottom = ulb;
-          lowerLipTop = llt;
-          lowerLipBottom = llb;
-        }
-
-        final showMakeup = hasFace ||
-            _foundationColor != null ||
-            _lipstickColor != null ||
-            _eyebrowColor != null;
-
-        return IgnorePointer(
-          child: CustomPaint(
-            painter: _MakeupOverlayPainter(
-              faceContourDisplay: faceContour,
-              leftBrowTop: leftBrowTop,
-              leftBrowBottom: leftBrowBottom,
-              rightBrowTop: rightBrowTop,
-              rightBrowBottom: rightBrowBottom,
-              upperLipTop: upperLipTop,
-              upperLipBottom: upperLipBottom,
-              lowerLipTop: lowerLipTop,
-              lowerLipBottom: lowerLipBottom,
-              faceBoundsDisplay: faceBoundsDisplay,
-              foundationColor: showMakeup ? _foundationColor : null,
-              lipstickColor: showMakeup ? _lipstickColor : null,
-              eyebrowColor: showMakeup ? _eyebrowColor : null,
+          // Fit the camera preview so it fills the panel using BoxFit.cover
+          // (same as CameraPreview default) — this preserves the original
+          // camera aspect ratio; the face overlay uses the same maths.
+          return SizedBox.expand(
+            child: FittedBox(
+              fit: BoxFit.cover,
+              child: SizedBox(
+                width:  ctrl.value.previewSize?.width  ?? panelW,
+                height: ctrl.value.previewSize?.height ?? panelH,
+                child: CameraPreview(ctrl),
+              ),
             ),
-          ),
-        );
+          );
+        });
       },
     );
   }
 
-  Rect _rectToDisplay(Rect r, double width, double height, Size imageSize, double scale, double offsetY) {
-    // Map image-space rect to display-space and guard against degenerate boxes
-    double left = r.left * scale;
-    double top = offsetY + r.top * scale;
-    double right = r.right * scale;
-    double bottom = offsetY + r.bottom * scale;
-
-    var wRect = right - left;
-    var hRect = bottom - top;
-
-    // If detector returned a collapsed/degenerate rect, create a sensible fallback
-    if (wRect.abs() < 2 || hRect.abs() < 2) {
-      // Prefer the detected center when available; otherwise fall back to a preview-centered position
-      final rawCenterX = ((r.left + r.right) / 2) * scale;
-      final rawCenterY = offsetY + ((r.top + r.bottom) / 2) * scale;
-      final centerX = rawCenterX.abs() < 1.0 ? (width * 0.35) : rawCenterX;
-      // Nudge fallback center downward to better match desktop previews.
-      final centerY = rawCenterY.isFinite ? rawCenterY : (height * 0.55);
-      final defaultSize = min(width, height) * 0.4;
-      final halfW = defaultSize / 2;
-      final halfH = defaultSize / 2;
-      left = centerX - halfW;
-      right = centerX + halfW;
-      top = centerY - halfH;
-      bottom = centerY + halfH;
-    }
-
-    // Apply small downward nudge so overlay better lines up with the face on Windows
-    top += height * _overlayYOffsetFactor;
-    bottom += height * _overlayYOffsetFactor;
-
-    // Clamp to display bounds
-    left = left.clamp(0.0, width);
-    right = right.clamp(0.0, width);
-    top = top.clamp(0.0, height);
-    bottom = bottom.clamp(0.0, height);
-
-    return Rect.fromLTRB(left, top, right, bottom);
-  }
-
-
-  Rect _toRect(dynamic box) {
-    if (box is Rect) return box;
-    try {
-      final left = (box.left as num).toDouble();
-      final top = (box.top as num).toDouble();
-      final right = (box.right as num).toDouble();
-      final bottom = (box.bottom as num).toDouble();
-      return Rect.fromLTRB(left, top, right, bottom);
-    } catch (_) {
-      return Rect.zero;
-    }
-  }
+  // ── Summary chip ──────────────────────────────────────────────────────────
 
   Widget _buildSelectedSummaryChip(ThemeData theme) {
-    final List<String> parts = [];
-
-    if (_selectedFoundationProduct != null) {
+    final parts = <String>[];
+    if (_selectedFoundationProduct != null)
       parts.add('Foundation: ${_selectedFoundationProduct!.brand ?? ''} ${_selectedFoundationProduct!.name}');
-    }
-    if (_selectedLipstickProduct != null) {
-      parts.add('Lipstick: ${_selectedLipstickProduct!.brand ?? ''} ${_selectedLipstickProduct!.name}');
-    }
-    if (_selectedEyebrowProduct != null) {
+    if (_selectedEyebrowProduct != null)
       parts.add('Eyebrow: ${_selectedEyebrowProduct!.brand ?? ''} ${_selectedEyebrowProduct!.name}');
-    }
-
+    if (_selectedEyeshadowProduct != null)
+      parts.add('Eyeshadow: ${_selectedEyeshadowProduct!.brand ?? ''} ${_selectedEyeshadowProduct!.name}');
+    if (_selectedLipstickProduct != null)
+      parts.add('Lipstick: ${_selectedLipstickProduct!.brand ?? ''} ${_selectedLipstickProduct!.name}');
     if (parts.isEmpty) return const SizedBox.shrink();
 
     return Positioned(
-      left: 16,
-      right: 16,
-      bottom: 12,
+      left: 16, right: 16, bottom: 12,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         decoration: BoxDecoration(
-          color: theme.colorScheme.surface.withAlpha((0.9 * 255).round()),
+          color: theme.colorScheme.surface.withAlpha((0.88 * 255).round()),
           borderRadius: BorderRadius.circular(24),
         ),
-        child: Text(
-          parts.join('  •  '),
-          style: theme.textTheme.bodySmall,
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-        ),
+        child: Text(parts.join('  •  '),
+            style: theme.textTheme.bodySmall, maxLines: 2,
+            overflow: TextOverflow.ellipsis),
       ),
     );
   }
 
+  // ── Right panel ───────────────────────────────────────────────────────────
 
   Widget _buildBottomPanel(ThemeData theme) {
-    if (_isLoadingProducts) {
-      return const Center(child: CircularProgressIndicator());
-    }
-
+    if (_isLoadingProducts) return const Center(child: CircularProgressIndicator());
     if (_productError != null) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(_productError!),
-            const SizedBox(height: 8),
-            FilledButton(
-              onPressed: _loadProducts,
-              child: const Text('Retry'),
-            ),
-          ],
-        ),
-      );
+      return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+        Text(_productError!),
+        const SizedBox(height: 8),
+        FilledButton(onPressed: _loadProducts, child: const Text('Retry')),
+      ]));
     }
 
     return Container(
       decoration: BoxDecoration(
         color: theme.colorScheme.surface,
         borderRadius: const BorderRadius.only(
-          topLeft: Radius.circular(24),
-          bottomLeft: Radius.circular(24),
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withAlpha((0.06 * 255).round()),
-            blurRadius: 12,
-            offset: const Offset(-4, 0),
-          ),
-        ],
+          topLeft: Radius.circular(24), bottomLeft: Radius.circular(24)),
+        boxShadow: [BoxShadow(
+          color: Colors.black.withAlpha((0.06 * 255).round()),
+          blurRadius: 12, offset: const Offset(-4, 0))],
       ),
-      child: Column(
-        children: [
-          const SizedBox(height: 8),
-          Container(
-            width: 40,
-            height: 4,
-            decoration: BoxDecoration(
-              color: theme.colorScheme.outlineVariant,
-              borderRadius: BorderRadius.circular(999),
-            ),
-          ),
-          const SizedBox(height: 8),
-          _buildStepHeader(theme),
-          const Divider(height: 1),
-          Expanded(
-            child: Row(
-              children: [
-                Expanded(
-                  flex: 2,
-                  child: _buildProductListForCurrentStep(theme),
-                ),
-                const VerticalDivider(width: 1),
-                Expanded(
-                  flex: 1,
-                  child: _buildTutorialPanel(theme),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
+      child: Column(children: [
+        const SizedBox(height: 8),
+        Container(width: 40, height: 4,
+          decoration: BoxDecoration(
+            color: theme.colorScheme.outlineVariant,
+            borderRadius: BorderRadius.circular(999))),
+        const SizedBox(height: 8),
+        _buildStepHeader(theme),
+        const Divider(height: 1),
+        Expanded(child: Row(children: [
+          Expanded(flex: 2, child: _buildProductListForCurrentStep(theme)),
+          const VerticalDivider(width: 1),
+          Expanded(flex: 1, child: _buildTutorialPanel(theme)),
+        ])),
+      ]),
     );
   }
 
   Widget _buildStepHeader(ThemeData theme) {
-    String title;
-    String subtitle;
-
-    switch (_currentStep) {
-      case MakeupStep.foundation:
-        title = 'Step 1 · Foundation';
-        subtitle = 'Pick your base shade. We will overlay it on your skin.';
-        break;
-      case MakeupStep.settingSpray:
-        title = 'Step 2 · Setting Spray';
-        subtitle = 'Lock in your base for long lasting wear.';
-        break;
-      case MakeupStep.eyebrow:
-        title = 'Step 3 · Eyebrow';
-        subtitle = 'Shape and fill brows to frame your face.';
-        break;
-      case MakeupStep.eyeshadow:
-        title = 'Step 4 · Eyeshadow';
-        subtitle = 'Add depth and dimension to your eyes.';
-        break;
-      case MakeupStep.lipstick:
-        title = 'Step 5 · Lipstick';
-        subtitle = 'Finish with a lip colour that matches your look.';
-        break;
-    }
-
+    final (title, subtitle) = switch (_currentStep) {
+      MakeupStep.foundation => ('Step 1 · Foundation',  'Pick your base shade.'),
+      MakeupStep.eyebrow    => ('Step 2 · Eyebrow',     'Shape and fill brows.'),
+      MakeupStep.eyeshadow  => ('Step 3 · Eyeshadow',   'Add depth to your eyes.'),
+      MakeupStep.lipstick   => ('Step 4 · Lipstick',    'Finish with a lip colour.'),
+    };
     return ListTile(
-      title: Text(
-        title,
-        style: theme.textTheme.titleMedium?.copyWith(
-          fontWeight: FontWeight.bold,
-        ),
-      ),
+      title: Text(title,
+          style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
       subtitle: Text(subtitle),
       trailing: FilledButton.icon(
         onPressed: _goToNextStep,
@@ -887,44 +734,27 @@ class _SmartAdvisorPageState extends State<SmartAdvisorPage>
   }
 
   Widget _buildProductListForCurrentStep(ThemeData theme) {
-    List<MakeupProduct> products;
-
-    switch (_currentStep) {
-      case MakeupStep.foundation:
-        products = _foundationProducts;
-        break;
-      case MakeupStep.lipstick:
-        products = _lipstickProducts;
-        break;
-      case MakeupStep.eyebrow:
-        products = _eyebrowProducts;
-        break;
-      case MakeupStep.settingSpray:
-        products = _settingProducts;
-        break;
-      case MakeupStep.eyeshadow:
-        products = _eyeshadowProducts;
-        break;
-        break;
-    }
-
+    final products = switch (_currentStep) {
+      MakeupStep.foundation => _foundationProducts,
+      MakeupStep.eyebrow    => _eyebrowProducts,
+      MakeupStep.eyeshadow  => _eyeshadowProducts,
+      MakeupStep.lipstick   => _lipstickProducts,
+    };
     if (products.isEmpty) {
-      return const Center(
-        child: Text('No products found for this step.'),
-      );
+      return const Center(child: Text('No products found for this step.'));
     }
-
     return ListView.builder(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       scrollDirection: Axis.horizontal,
       itemCount: products.length,
-      itemBuilder: (context, index) {
-        final product = products[index];
+      itemBuilder: (ctx, i) {
+        final product = products[i];
         return _MakeupProductCard(
           product: product,
           isSelected: product == _selectedFoundationProduct ||
               product == _selectedLipstickProduct ||
-              product == _selectedEyebrowProduct,
+              product == _selectedEyebrowProduct ||
+              product == _selectedEyeshadowProduct,
           onSelect: (color) => _onSelectProduct(product, color),
         );
       },
@@ -932,270 +762,266 @@ class _SmartAdvisorPageState extends State<SmartAdvisorPage>
   }
 
   Widget _buildTutorialPanel(ThemeData theme) {
-    final animationValue = _tutorialController.value;
+    final anim = _tutorialController.value;
+    int si(MakeupStep s) => s.index;
 
     return Padding(
       padding: const EdgeInsets.all(12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Step-by-step guide',
-            style: theme.textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Expanded(
-            child: ListView(
-              children: [
-                _TutorialStepTile(
-                  index: 1,
-                  title: 'Apply foundation',
-                  description:
-                      'Start from the center of the face and blend outwards using a damp sponge or brush.',
-                  isActive: _currentStep == MakeupStep.foundation,
-                  progress: _currentStep == MakeupStep.foundation
-                      ? animationValue
-                      : (_currentStep.index > MakeupStep.foundation.index
-                          ? 1
-                          : 0),
-                ),
-                _TutorialStepTile(
-                  index: 2,
-                  title: 'Setting spray / powder',
-                  description:
-                      'Lightly mist or press powder on T-zone and under eyes to fix the base.',
-                  isActive: _currentStep == MakeupStep.settingSpray,
-                  progress: _currentStep == MakeupStep.settingSpray
-                      ? animationValue
-                      : (_currentStep.index > MakeupStep.settingSpray.index
-                          ? 1
-                          : 0),
-                ),
-                _TutorialStepTile(
-                  index: 3,
-                  title: 'Eyebrow definition',
-                  description:
-                      'Outline the lower edge of the brow, then fill in sparse areas with short strokes.',
-                  isActive: _currentStep == MakeupStep.eyebrow,
-                  progress: _currentStep == MakeupStep.eyebrow
-                      ? animationValue
-                      : (_currentStep.index > MakeupStep.eyebrow.index
-                          ? 1
-                          : 0),
-                ),
-                _TutorialStepTile(
-                  index: 4,
-                  title: 'Eyeshadow (optional)',
-                  description:
-                      'Sweep a light shade over the lid, add medium shade in the crease, and deepen the outer corner.',
-                  isActive: _currentStep == MakeupStep.eyeshadow,
-                  progress: _currentStep == MakeupStep.eyeshadow
-                      ? animationValue
-                      : (_currentStep.index > MakeupStep.eyeshadow.index
-                          ? 1
-                          : 0),
-                ),
-                _TutorialStepTile(
-                  index: 5,
-                  title: 'Lipstick',
-                  description:
-                      'Outline the lips, then fill in towards the center. Blot and reapply for intensity.',
-                  isActive: _currentStep == MakeupStep.lipstick,
-                  progress: _currentStep == MakeupStep.lipstick
-                      ? animationValue
-                      : (_currentStep.index > MakeupStep.lipstick.index
-                          ? 1
-                          : 0),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Tip: you can change any colour anytime and see it instantly on your live camera preview.',
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-          ),
-        ],
-      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('Guide', style: theme.textTheme.titleMedium
+            ?.copyWith(fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        Expanded(child: ListView(children: [
+          _TutorialStepTile(index: 1, title: 'Foundation',
+            description: 'Blend from centre outward with a damp sponge.',
+            isActive: _currentStep == MakeupStep.foundation,
+            progress: _currentStep == MakeupStep.foundation ? anim
+                : (si(_currentStep) > si(MakeupStep.foundation) ? 1.0 : 0.0)),
+          _TutorialStepTile(index: 2, title: 'Eyebrow',
+            description: 'Outline brow edge, fill sparse areas with short strokes.',
+            isActive: _currentStep == MakeupStep.eyebrow,
+            progress: _currentStep == MakeupStep.eyebrow ? anim
+                : (si(_currentStep) > si(MakeupStep.eyebrow) ? 1.0 : 0.0)),
+          _TutorialStepTile(index: 3, title: 'Eyeshadow',
+            description: 'Light on lid, medium in crease, deepen outer corner.',
+            isActive: _currentStep == MakeupStep.eyeshadow,
+            progress: _currentStep == MakeupStep.eyeshadow ? anim
+                : (si(_currentStep) > si(MakeupStep.eyeshadow) ? 1.0 : 0.0)),
+          _TutorialStepTile(index: 4, title: 'Lipstick',
+            description: 'Outline lips then fill toward centre. Blot and reapply.',
+            isActive: _currentStep == MakeupStep.lipstick,
+            progress: _currentStep == MakeupStep.lipstick ? anim
+                : (si(_currentStep) > si(MakeupStep.lipstick) ? 1.0 : 0.0)),
+        ])),
+        const SizedBox(height: 8),
+        AnimatedSwitcher(
+          duration: const Duration(milliseconds: 300),
+          child: _hasFaceDetected
+              ? Row(key: const ValueKey('on'), children: [
+                  Icon(Icons.face, size: 14, color: theme.colorScheme.primary),
+                  const SizedBox(width: 4),
+                  Expanded(child: Text('Face detected — live overlay active.',
+                    style: theme.textTheme.bodySmall
+                        ?.copyWith(color: theme.colorScheme.primary))),
+                ])
+              : Row(key: const ValueKey('off'), children: [
+                  Icon(Icons.face_retouching_natural, size: 14,
+                      color: theme.colorScheme.onSurfaceVariant),
+                  const SizedBox(width: 4),
+                  Expanded(child: Text('Align face with the oval guide.',
+                    style: theme.textTheme.bodySmall
+                        ?.copyWith(color: theme.colorScheme.onSurfaceVariant))),
+                ]),
+        ),
+        const SizedBox(height: 4),
+        Text('All selected colours stay on as you move between steps.',
+            style: theme.textTheme.bodySmall
+                ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+      ]),
     );
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Makeup Overlay Painter
+// ─────────────────────────────────────────────────────────────────────────────
+
 class _MakeupOverlayPainter extends CustomPainter {
   final List<Offset>? faceContourDisplay;
-  final List<Offset>? leftBrowTop;
-  final List<Offset>? leftBrowBottom;
-  final List<Offset>? rightBrowTop;
-  final List<Offset>? rightBrowBottom;
-  final List<Offset>? upperLipTop;
-  final List<Offset>? upperLipBottom;
-  final List<Offset>? lowerLipTop;
-  final List<Offset>? lowerLipBottom;
+  final List<Offset>? leftBrowTop, leftBrowBottom;
+  final List<Offset>? rightBrowTop, rightBrowBottom;
+  final List<Offset>? upperLipTop, upperLipBottom;
+  final List<Offset>? lowerLipTop, lowerLipBottom;
+  final List<Offset>? leftEyeContour, rightEyeContour;
   final Rect? faceBoundsDisplay;
-  final Color? foundationColor;
-  final Color? lipstickColor;
-  final Color? eyebrowColor;
+  final Color? foundationColor, lipstickColor, eyebrowColor, eyeshadowColor;
+  final bool hasFaceDetected;
 
-  _MakeupOverlayPainter({
+  const _MakeupOverlayPainter({
     this.faceContourDisplay,
-    this.leftBrowTop,
-    this.leftBrowBottom,
-    this.rightBrowTop,
-    this.rightBrowBottom,
-    this.upperLipTop,
-    this.upperLipBottom,
-    this.lowerLipTop,
-    this.lowerLipBottom,
+    this.leftBrowTop, this.leftBrowBottom,
+    this.rightBrowTop, this.rightBrowBottom,
+    this.upperLipTop, this.upperLipBottom,
+    this.lowerLipTop, this.lowerLipBottom,
+    this.leftEyeContour, this.rightEyeContour,
     this.faceBoundsDisplay,
-    this.foundationColor,
-    this.lipstickColor,
-    this.eyebrowColor,
+    this.foundationColor, this.lipstickColor,
+    this.eyebrowColor, this.eyeshadowColor,
+    required this.hasFaceDetected,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    debugPrint('Overlay paint: foundation=${foundationColor?.toString()}, lipstick=${lipstickColor?.toString()}, eyebrow=${eyebrowColor?.toString()}, faceBounds=${faceBoundsDisplay?.toString()}, canvasSize=${size.width}x${size.height}');
-    // Foundation: face contour or fallback oval so user can see the effect
+    final r = faceBoundsDisplay;
+    if (r == null) return;
+
+    // ── 1. Guide outline ──────────────────────────────────────────────────
+    final guidePaint = Paint()
+      ..color = hasFaceDetected
+          ? Colors.greenAccent.withAlpha(210)
+          : Colors.white.withAlpha(160)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.5
+      ..isAntiAlias = true;
+    hasFaceDetected
+        ? canvas.drawOval(r, guidePaint)
+        : _drawDashedOval(canvas, r, guidePaint);
+
+    // ── 2. Foundation — semi-transparent skin tone tint over face region ──
     if (foundationColor != null) {
-      final paint = Paint()
-        // Slightly stronger alpha so foundation remains visible on varied backgrounds.
-        ..color = foundationColor!.withAlpha((0.7 * 255).round())
+      // Use a soft blending: fill the face contour (or oval) with the colour
+      // at moderate opacity so the skin texture still shows through.
+      final p = Paint()
+        ..color = foundationColor!.withAlpha((0.55 * 255).round())
         ..style = PaintingStyle.fill
+        ..blendMode = BlendMode.srcOver
         ..isAntiAlias = true;
       if (faceContourDisplay != null && faceContourDisplay!.length >= 3) {
-        final path = Path()..moveTo(faceContourDisplay!.first.dx, faceContourDisplay!.first.dy);
-        for (var i = 1; i < faceContourDisplay!.length; i++) {
-          path.lineTo(faceContourDisplay![i].dx, faceContourDisplay![i].dy);
-        }
-        path.close();
-        canvas.drawPath(path, paint);
+        canvas.drawPath(_pointsToPath(faceContourDisplay!), p);
       } else {
-        // Use provided face bounds if available, otherwise draw a centered fallback oval
-        final r = faceBoundsDisplay ?? Rect.fromCenter(
-          center: Offset(size.width * 0.2, size.height * 0.4),
-          width: min(size.width, size.height) * 0.2,
-          height: min(size.width, size.height) * 0.2,
-        );
-        canvas.drawOval(r, paint);
+        canvas.drawOval(r, p);
       }
     }
 
-    // Eyebrows: only on detected face, filled along real eyebrow contours so colour fits the brow
-    if (eyebrowColor != null) {
-      final paint = Paint()
-        ..color = eyebrowColor!.withAlpha((0.92 * 255).round())
-        ..style = PaintingStyle.fill;
-      paint.isAntiAlias = true;
-      bool drawBrow(List<Offset>? top, List<Offset>? bottom) {
-        final pts = <Offset>[];
-        if (top != null && top.isNotEmpty) pts.addAll(top);
-        if (bottom != null && bottom.isNotEmpty) {
-          pts.addAll(bottom.reversed);
-        }
-        if (pts.length < 3) return false;
-        final path = Path()..moveTo(pts.first.dx, pts.first.dy);
-        for (var i = 1; i < pts.length; i++) {
-          path.lineTo(pts[i].dx, pts[i].dy);
-        }
-        path.close();
-        canvas.drawPath(path, paint);
-        return true;
-      }
-
-      final leftDrawn = drawBrow(leftBrowTop, leftBrowBottom);
-      final rightDrawn = drawBrow(rightBrowTop, rightBrowBottom);
-
-      // If no real eyebrow contours are available (e.g. on Windows/TFLite fallback),
-      // draw simple synthetic brows positioned relative to the face bounds so the
-      // eyebrow color is still visible.
-      if (!leftDrawn && !rightDrawn) {
-        final r = faceBoundsDisplay ?? Rect.fromCenter(
-          center: Offset(size.width * 0.35, size.height * 0.5),
-          width: min(size.width, size.height) * 0.4,
-          height: min(size.width, size.height) * 0.4,
-        );
-        final browY = r.top + r.height * 0.22;
-        final browW = r.width * 0.22;
-        final browH = r.height * 0.06;
-
-        final leftBrowRect = Rect.fromCenter(
-          center: Offset(r.center.dx - r.width * 0.28, browY),
-          width: browW,
-          height: browH,
-        );
-        final rightBrowRect = Rect.fromCenter(
-          center: Offset(r.center.dx + r.width * 0.28, browY),
-          width: browW,
-          height: browH,
-        );
-
-        final browPaint = Paint()
-          ..color = eyebrowColor!.withAlpha((0.92 * 255).round())
-          ..style = PaintingStyle.fill
-          ..isAntiAlias = true;
-
-        canvas.drawRRect(
-          RRect.fromRectAndRadius(leftBrowRect, const Radius.circular(8)),
-          browPaint,
-        );
-        canvas.drawRRect(
-          RRect.fromRectAndRadius(rightBrowRect, const Radius.circular(8)),
-          browPaint,
-        );
-      }
-    }
-
-    // Lips: lip contours or synthetic; fallback oval if no points
-    if (lipstickColor != null) {
-      final all = <Offset>[];
-      if (upperLipTop != null) all.addAll(upperLipTop!);
-      if (upperLipBottom != null) all.addAll(upperLipBottom!);
-      if (lowerLipBottom != null) all.addAll(lowerLipBottom!.reversed);
-      if (lowerLipTop != null) all.addAll(lowerLipTop!.reversed);
-      final lipPaint = Paint()
-        ..color = lipstickColor!.withAlpha((0.9 * 255).round())
+    // ── 3. Eyeshadow — drawn over the eye lid region ───────────────────────
+    if (eyeshadowColor != null) {
+      final p = Paint()
+        ..color = eyeshadowColor!.withAlpha((0.68 * 255).round())
         ..style = PaintingStyle.fill
+        ..blendMode = BlendMode.multiply
         ..isAntiAlias = true;
-      if (all.length >= 3) {
-        final path = Path()..moveTo(all.first.dx, all.first.dy);
-        for (var i = 1; i < all.length; i++) {
-          path.lineTo(all[i].dx, all[i].dy);
-        }
-        path.close();
-        canvas.drawPath(path, lipPaint);
+
+      // Try to use real eye contours first
+      if (leftEyeContour != null && leftEyeContour!.length >= 3) {
+        // Extend the eye contour upward to cover the lid (not just the eye opening)
+        final lidPts = _expandEyeLid(leftEyeContour!, r, isLeft: true);
+        canvas.drawPath(_pointsToPath(lidPts), p);
       } else {
-        final r = faceBoundsDisplay ?? Rect.fromCenter(
-          center: Offset(size.width * 0.35, size.height * 0.55),
-          width: min(size.width, size.height) * 0.4,
-          height: min(size.width, size.height) * 0.4,
-        );
-        final lipRect = Rect.fromCenter(
-          center: Offset(r.center.dx, r.bottom - r.height * 0.25),
-          width: r.width * 0.4,
-          height: r.height * 0.12,
-        );
-        canvas.drawOval(lipRect, lipPaint);
+        _drawEyeshadowOval(canvas, r, isLeft: true, p: p);
       }
+
+      if (rightEyeContour != null && rightEyeContour!.length >= 3) {
+        final lidPts = _expandEyeLid(rightEyeContour!, r, isLeft: false);
+        canvas.drawPath(_pointsToPath(lidPts), p);
+      } else {
+        _drawEyeshadowOval(canvas, r, isLeft: false, p: p);
+      }
+    }
+
+    // ── 4. Eyebrows ───────────────────────────────────────────────────────
+    if (eyebrowColor != null) {
+      final p = Paint()
+        ..color = eyebrowColor!.withAlpha((0.88 * 255).round())
+        ..style = PaintingStyle.fill
+        ..blendMode = BlendMode.srcOver
+        ..isAntiAlias = true;
+      final lOk = _drawBrow(canvas, leftBrowTop,  leftBrowBottom,  p);
+      final rOk = _drawBrow(canvas, rightBrowTop, rightBrowBottom, p);
+      if (!lOk && !rOk) {
+        // Fallback arched rectangles
+        final browY = r.top + r.height * 0.26;
+        final bW = r.width * 0.24;
+        final bH = r.height * 0.055;
+        for (final bx in [r.center.dx - r.width * 0.27, r.center.dx + r.width * 0.27]) {
+          canvas.drawRRect(RRect.fromRectAndRadius(
+            Rect.fromCenter(center: Offset(bx, browY), width: bW, height: bH),
+            const Radius.circular(8)), p);
+        }
+      }
+    }
+
+    // ── 5. Lipstick ───────────────────────────────────────────────────────
+    if (lipstickColor != null) {
+      final p = Paint()
+        ..color = lipstickColor!.withAlpha((0.85 * 255).round())
+        ..style = PaintingStyle.fill
+        ..blendMode = BlendMode.srcOver
+        ..isAntiAlias = true;
+      final all = <Offset>[
+        ...?upperLipTop, ...?upperLipBottom,
+        if (lowerLipBottom != null) ...lowerLipBottom!.reversed,
+        if (lowerLipTop    != null) ...lowerLipTop!.reversed,
+      ];
+      if (all.length >= 3) {
+        canvas.drawPath(_pointsToPath(all), p);
+      } else {
+        // Fallback oval lip
+        canvas.drawOval(Rect.fromCenter(
+          center: Offset(r.center.dx, r.top + r.height * 0.72),
+          width: r.width * 0.44, height: r.height * 0.14), p);
+      }
+    }
+  }
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+
+  /// Extends eye contour upward to simulate the eyelid/eyeshadow area.
+  List<Offset> _expandEyeLid(List<Offset> eye, Rect face, {required bool isLeft}) {
+    if (eye.isEmpty) return eye;
+    final minY = eye.map((e) => e.dy).reduce(min);
+    final lidH = face.height * 0.07;
+    // Take only the top half of the eye contour and push it upward
+    final top = eye.where((e) => e.dy <= minY + (face.height * 0.04)).toList();
+    if (top.isEmpty) return eye;
+    final expanded = [
+      ...eye,
+      ...top.reversed.map((e) => Offset(e.dx, e.dy - lidH)),
+    ];
+    return expanded;
+  }
+
+  void _drawEyeshadowOval(Canvas canvas, Rect r, {required bool isLeft, required Paint p}) {
+    final eyeY = r.top + r.height * 0.30;
+    final eyeW = r.width  * 0.22;
+    final eyeH = r.height * 0.10;
+    final cx = isLeft
+        ? r.center.dx - r.width * 0.24
+        : r.center.dx + r.width * 0.24;
+    canvas.drawOval(Rect.fromCenter(center: Offset(cx, eyeY), width: eyeW, height: eyeH), p);
+  }
+
+  bool _drawBrow(Canvas canvas, List<Offset>? top, List<Offset>? bottom, Paint p) {
+    final pts = <Offset>[...?top, if (bottom != null) ...bottom.reversed];
+    if (pts.length < 3) return false;
+    canvas.drawPath(_pointsToPath(pts), p);
+    return true;
+  }
+
+  Path _pointsToPath(List<Offset> pts) {
+    final path = Path()..moveTo(pts.first.dx, pts.first.dy);
+    for (var i = 1; i < pts.length; i++) path.lineTo(pts[i].dx, pts[i].dy);
+    return path..close();
+  }
+
+  void _drawDashedOval(Canvas canvas, Rect rect, Paint paint) {
+    const dashCount = 28;
+    const gap = 0.35;
+    for (int i = 0; i < dashCount; i++) {
+      canvas.drawArc(rect, (i / dashCount) * 2 * pi,
+          (1 - gap) / dashCount * 2 * pi, false, paint);
     }
   }
 
   @override
-  bool shouldRepaint(covariant _MakeupOverlayPainter oldDelegate) {
-    return oldDelegate.foundationColor != foundationColor ||
-        oldDelegate.lipstickColor != lipstickColor ||
-        oldDelegate.eyebrowColor != eyebrowColor ||
-        oldDelegate.faceContourDisplay != faceContourDisplay ||
-        oldDelegate.faceBoundsDisplay != faceBoundsDisplay ||
-        oldDelegate.leftBrowTop != leftBrowTop ||
-        oldDelegate.rightBrowTop != rightBrowTop ||
-        oldDelegate.upperLipTop != upperLipTop ||
-        oldDelegate.lowerLipTop != lowerLipTop;
-  }
+  bool shouldRepaint(covariant _MakeupOverlayPainter old) =>
+      old.foundationColor != foundationColor ||
+      old.lipstickColor   != lipstickColor   ||
+      old.eyebrowColor    != eyebrowColor    ||
+      old.eyeshadowColor  != eyeshadowColor  ||
+      old.faceContourDisplay != faceContourDisplay ||
+      old.faceBoundsDisplay  != faceBoundsDisplay  ||
+      old.leftBrowTop     != leftBrowTop  ||
+      old.rightBrowTop    != rightBrowTop ||
+      old.upperLipTop     != upperLipTop  ||
+      old.lowerLipTop     != lowerLipTop  ||
+      old.leftEyeContour  != leftEyeContour ||
+      old.rightEyeContour != rightEyeContour ||
+      old.hasFaceDetected != hasFaceDetected;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Product Card
+// ─────────────────────────────────────────────────────────────────────────────
 
 class _MakeupProductCard extends StatelessWidget {
   final MakeupProduct product;
@@ -1203,122 +1029,67 @@ class _MakeupProductCard extends StatelessWidget {
   final void Function(MakeupColorOption? color) onSelect;
 
   const _MakeupProductCard({
-    required this.product,
-    required this.isSelected,
-    required this.onSelect,
-  });
+    required this.product, required this.isSelected, required this.onSelect});
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-
     final hasColors = product.colors.isNotEmpty;
-
     return Container(
-      width: 220,
-      margin: const EdgeInsets.symmetric(horizontal: 8),
+      width: 220, margin: const EdgeInsets.symmetric(horizontal: 8),
       child: Card(
         elevation: isSelected ? 4 : 1,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
-          side: BorderSide(
-            color: isSelected
-                ? theme.colorScheme.primary
-                : theme.colorScheme.outlineVariant,
-          ),
-        ),
+          side: BorderSide(color: isSelected
+              ? theme.colorScheme.primary : theme.colorScheme.outlineVariant)),
         child: InkWell(
           borderRadius: BorderRadius.circular(16),
           onTap: () => onSelect(hasColors ? product.colors.first : null),
           child: Padding(
             padding: const EdgeInsets.all(8),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(12),
-                    child: product.imageUrl.isEmpty
-                        ? Container(
-                            color: theme.colorScheme.surfaceContainerHighest,
-                            child: const Center(
-                              child: Icon(Icons.image_not_supported_outlined),
-                            ),
-                          )
-                        : Image.network(
-                            product.imageUrl,
-                            fit: BoxFit.cover,
-                            width: double.infinity,
-                            errorBuilder: (_, __, ___) => Container(
-                              color: theme.colorScheme.surfaceContainerHighest,
-                              child: Center(
-                                child: Icon(
-                                  Icons.broken_image_outlined,
-                                  color: theme.colorScheme.onSurfaceVariant,
-                                ),
-                              ),
-                            ),
-                          ),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  product.brand ?? 'Unknown brand',
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Expanded(child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: product.imageUrl.isEmpty
+                    ? Container(color: theme.colorScheme.surfaceContainerHighest,
+                        child: const Center(child: Icon(Icons.image_not_supported_outlined)))
+                    : Image.network(product.imageUrl, fit: BoxFit.cover, width: double.infinity,
+                        errorBuilder: (_, __, ___) => Container(
+                          color: theme.colorScheme.surfaceContainerHighest,
+                          child: Center(child: Icon(Icons.broken_image_outlined,
+                              color: theme.colorScheme.onSurfaceVariant)))),
+              )),
+              const SizedBox(height: 8),
+              Text(product.brand ?? 'Unknown brand',
                   style: theme.textTheme.labelSmall?.copyWith(
-                    color: theme.colorScheme.primary,
-                    fontWeight: FontWeight.w600,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                Text(
-                  product.name,
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                const SizedBox(height: 4),
-                if (hasColors)
-                  SizedBox(
-                    height: 28,
-                    child: ListView.separated(
-                      scrollDirection: Axis.horizontal,
-                      itemCount: product.colors.length.clamp(0, 6),
-                      separatorBuilder: (_, __) => const SizedBox(width: 4),
-                      itemBuilder: (context, index) {
-                        final colorOption = product.colors[index];
-                        final color = _parseHex(colorOption.hexValue);
-                        return GestureDetector(
-                          onTap: () => onSelect(colorOption),
-                          child: Tooltip(
-                            message: colorOption.name,
-                            child: CircleAvatar(
-                              radius: 12,
-                              backgroundColor: color ??
-                                  theme.colorScheme.surfaceContainerHighest,
-                              child: color == null
-                                  ? const Icon(
-                                      Icons.color_lens,
-                                      size: 14,
-                                    )
-                                  : null,
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-                if (!hasColors)
-                  Text(
-                    'No colour options listed',
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-              ],
-            ),
+                      color: theme.colorScheme.primary, fontWeight: FontWeight.w600),
+                  maxLines: 1, overflow: TextOverflow.ellipsis),
+              Text(product.name,
+                  style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+                  maxLines: 2, overflow: TextOverflow.ellipsis),
+              const SizedBox(height: 4),
+              if (hasColors)
+                SizedBox(height: 28, child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: product.colors.length.clamp(0, 6),
+                  separatorBuilder: (_, __) => const SizedBox(width: 4),
+                  itemBuilder: (ctx, i) {
+                    final co = product.colors[i];
+                    final c = _parseHex(co.hexValue);
+                    return GestureDetector(
+                      onTap: () => onSelect(co),
+                      child: Tooltip(message: co.name,
+                        child: CircleAvatar(radius: 12,
+                          backgroundColor: c ?? theme.colorScheme.surfaceContainerHighest,
+                          child: c == null ? const Icon(Icons.color_lens, size: 14) : null)));
+                  },
+                )),
+              if (!hasColors)
+                Text('No colour options listed',
+                    style: theme.textTheme.bodySmall
+                        ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+            ]),
           ),
         ),
       ),
@@ -1326,116 +1097,65 @@ class _MakeupProductCard extends StatelessWidget {
   }
 
   Color? _parseHex(String hex) {
-    var cleaned = hex.toUpperCase().replaceAll('#', '');
-    if (cleaned.length == 3) {
-      cleaned = cleaned.split('').map((c) => '$c$c').join();
-    }
-    if (cleaned.length == 6) {
-      cleaned = 'FF$cleaned';
-    }
-    if (cleaned.length != 8) return null;
-    try {
-      return Color(int.parse(cleaned, radix: 16));
-    } catch (_) {
-      return null;
-    }
+    var c = hex.toUpperCase().replaceAll('#', '');
+    if (c.length == 3) c = c.split('').map((x) => '$x$x').join();
+    if (c.length == 6) c = 'FF$c';
+    if (c.length != 8) return null;
+    try { return Color(int.parse(c, radix: 16)); } catch (_) { return null; }
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Tutorial Step Tile
+// ─────────────────────────────────────────────────────────────────────────────
+
 class _TutorialStepTile extends StatelessWidget {
   final int index;
-  final String title;
-  final String description;
+  final String title, description;
   final bool isActive;
   final double progress;
 
   const _TutorialStepTile({
-    required this.index,
-    required this.title,
-    required this.description,
-    required this.isActive,
-    required this.progress,
-  });
+    required this.index, required this.title, required this.description,
+    required this.isActive, required this.progress});
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-
-    final activeColor = theme.colorScheme.primary;
-    final inactiveColor = theme.colorScheme.outlineVariant;
+    final active   = theme.colorScheme.primary;
+    final inactive = theme.colorScheme.outlineVariant;
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Column(
-            children: [
-              CircleAvatar(
-                radius: 12,
-                backgroundColor: isActive
-                    ? activeColor
-                    : (progress >= 1 ? activeColor : inactiveColor),
-                child: Text(
-                  '$index',
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-              if (index < 5)
-                Container(
-                  width: 2,
-                  height: 32,
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [
-                        activeColor.withAlpha((progress.clamp(0, 1) * 255).round()),
-                        inactiveColor,
-                      ],
-                    ),
-                  ),
-                ),
-            ],
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Column(children: [
+          CircleAvatar(
+            radius: 12,
+            backgroundColor: (isActive || progress >= 1) ? active : inactive,
+            child: Text('$index', style: theme.textTheme.labelSmall
+                ?.copyWith(color: Colors.white, fontWeight: FontWeight.bold)),
           ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 250),
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: isActive
-                    ? activeColor.withAlpha((0.07 * 255).round())
-                    : theme.colorScheme.surface,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: isActive ? activeColor : inactiveColor,
-                ),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: theme.textTheme.bodyMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    description,
-                    style: theme.textTheme.bodySmall,
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
+          if (index < 4)
+            Container(width: 2, height: 32, decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter, end: Alignment.bottomCenter,
+                colors: [active.withAlpha((progress.clamp(0,1)*255).round()), inactive]))),
+        ]),
+        const SizedBox(width: 8),
+        Expanded(child: AnimatedContainer(
+          duration: const Duration(milliseconds: 250),
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: isActive ? active.withAlpha((0.07*255).round()) : theme.colorScheme.surface,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: isActive ? active : inactive)),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(title, style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 4),
+            Text(description, style: theme.textTheme.bodySmall),
+          ]),
+        )),
+      ]),
     );
   }
 }
-

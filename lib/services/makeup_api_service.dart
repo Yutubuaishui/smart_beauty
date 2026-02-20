@@ -8,6 +8,9 @@ class MakeupApiService {
   static const String _baseUrl =
       'https://makeup-api.herokuapp.com/api/v1/products.json';
 
+  /// Valid product_type values accepted by the Makeup API:
+  /// blush, bronzer, eyebrow, eyeliner, eyeshadow, foundation,
+  /// lip_liner, lipstick, mascara, nail_polish, powder (setting/face powder)
   Future<List<MakeupProduct>> fetchProductsByType(String productType) async {
     final uri = Uri.parse('$_baseUrl?product_type=$productType');
     final response = await http.get(uri);
@@ -27,4 +30,3 @@ class MakeupApiService {
         .toList();
   }
 }
-
