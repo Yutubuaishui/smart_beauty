@@ -36,6 +36,8 @@ class _SmartAdvisorPageState extends State<SmartAdvisorPage>
   List<MakeupProduct> _foundationProducts = [];
   List<MakeupProduct> _lipstickProducts = [];
   List<MakeupProduct> _eyebrowProducts = [];
+  List<MakeupProduct> _eyeshadowProducts = [];
+  List<MakeupProduct> _settingProducts = [];
 
   bool _isLoadingProducts = true;
   String? _productError;
@@ -65,6 +67,9 @@ class _SmartAdvisorPageState extends State<SmartAdvisorPage>
   tflite.FaceDetector? _tfliteDetector;
   final _recommender = CosmeticRecommenderService();
   bool _recommendationRequested = false;
+  // Small vertical offset factor (fraction of display height) to nudge overlay downward on Windows
+  // Increased slightly so the overlay sits lower by default on desktop previews.
+  final double _overlayYOffsetFactor = 0.09;
 
   @override
   void initState() {
@@ -119,7 +124,11 @@ class _SmartAdvisorPageState extends State<SmartAdvisorPage>
         _makeupApi.fetchProductsByType('foundation'),
         _makeupApi.fetchProductsByType('lipstick'),
         _makeupApi.fetchProductsByType('eyebrow'),
+        _makeupApi.fetchProductsByType('palette'),
+        _makeupApi.fetchProductsByType('setting powder'),
       ]);
+
+      debugPrint('Loaded products: foundation=${results[0].length}, lipstick=${results[1].length}, eyebrow=${results[2].length}, palette=${results[3].length}, setting_powder=${results[4].length}');
 
       setState(() {
         _foundationProducts = results[0];
@@ -129,6 +138,12 @@ class _SmartAdvisorPageState extends State<SmartAdvisorPage>
         _eyebrowProducts = results[2].isEmpty
             ? results[0] // fallback: reuse foundation list if eyebrow missing
             : results[2];
+        _eyeshadowProducts = results[3].isEmpty
+            ? results[0]
+            : results[3];
+        _settingProducts = results[4].isEmpty
+            ? results[0]
+            : results[4];
         _isLoadingProducts = false;
       });
     } catch (e) {
@@ -287,6 +302,7 @@ class _SmartAdvisorPageState extends State<SmartAdvisorPage>
           break;
       }
     });
+    debugPrint('Selected product: ${product.name}, color: ${color?.name} ${color?.hexValue}');
   }
 
   Color? _parseHexColor(String? hex) {
@@ -597,7 +613,52 @@ class _SmartAdvisorPageState extends State<SmartAdvisorPage>
             lowerLipTop,
             lowerLipBottom,
           );
+        } else if (_foundationColor != null || _lipstickColor != null || _eyebrowColor != null) {
+          // No face detected yet: still show makeup at a default position so user can see the effect.
+          final faceRadius = min(width, height) * 0.22;
+          final faceCenterX = width * 0.35;
+          // Nudge the default face position slightly lower so overlay aligns better on desktop.
+          final faceCenterY = height * 0.55;
+          faceBoundsDisplay = Rect.fromCircle(
+            center: Offset(faceCenterX, faceCenterY),
+            radius: faceRadius,
+          );
+          final fc = <Offset>[];
+          final lbt = <Offset>[];
+          final lbb = <Offset>[];
+          final rbt = <Offset>[];
+          final rbb = <Offset>[];
+          final ult = <Offset>[];
+          final ulb = <Offset>[];
+          final llt = <Offset>[];
+          final llb = <Offset>[];
+          _syntheticContoursFromRect(
+            faceBoundsDisplay!,
+            fc,
+            lbt,
+            lbb,
+            rbt,
+            rbb,
+            ult,
+            ulb,
+            llt,
+            llb,
+          );
+          faceContour = fc;
+          leftBrowTop = lbt;
+          leftBrowBottom = lbb;
+          rightBrowTop = rbt;
+          rightBrowBottom = rbb;
+          upperLipTop = ult;
+          upperLipBottom = ulb;
+          lowerLipTop = llt;
+          lowerLipBottom = llb;
         }
+
+        final showMakeup = hasFace ||
+            _foundationColor != null ||
+            _lipstickColor != null ||
+            _eyebrowColor != null;
 
         return IgnorePointer(
           child: CustomPaint(
@@ -612,9 +673,9 @@ class _SmartAdvisorPageState extends State<SmartAdvisorPage>
               lowerLipTop: lowerLipTop,
               lowerLipBottom: lowerLipBottom,
               faceBoundsDisplay: faceBoundsDisplay,
-              foundationColor: hasFace ? _foundationColor : null,
-              lipstickColor: hasFace ? _lipstickColor : null,
-              eyebrowColor: hasFace ? _eyebrowColor : null,
+              foundationColor: showMakeup ? _foundationColor : null,
+              lipstickColor: showMakeup ? _lipstickColor : null,
+              eyebrowColor: showMakeup ? _eyebrowColor : null,
             ),
           ),
         );
@@ -623,13 +684,45 @@ class _SmartAdvisorPageState extends State<SmartAdvisorPage>
   }
 
   Rect _rectToDisplay(Rect r, double width, double height, Size imageSize, double scale, double offsetY) {
-    return Rect.fromLTRB(
-      r.left * scale,
-      offsetY + r.top * scale,
-      r.right * scale,
-      offsetY + r.bottom * scale,
-    );
+    // Map image-space rect to display-space and guard against degenerate boxes
+    double left = r.left * scale;
+    double top = offsetY + r.top * scale;
+    double right = r.right * scale;
+    double bottom = offsetY + r.bottom * scale;
+
+    var wRect = right - left;
+    var hRect = bottom - top;
+
+    // If detector returned a collapsed/degenerate rect, create a sensible fallback
+    if (wRect.abs() < 2 || hRect.abs() < 2) {
+      // Prefer the detected center when available; otherwise fall back to a preview-centered position
+      final rawCenterX = ((r.left + r.right) / 2) * scale;
+      final rawCenterY = offsetY + ((r.top + r.bottom) / 2) * scale;
+      final centerX = rawCenterX.abs() < 1.0 ? (width * 0.35) : rawCenterX;
+      // Nudge fallback center downward to better match desktop previews.
+      final centerY = rawCenterY.isFinite ? rawCenterY : (height * 0.55);
+      final defaultSize = min(width, height) * 0.4;
+      final halfW = defaultSize / 2;
+      final halfH = defaultSize / 2;
+      left = centerX - halfW;
+      right = centerX + halfW;
+      top = centerY - halfH;
+      bottom = centerY + halfH;
+    }
+
+    // Apply small downward nudge so overlay better lines up with the face on Windows
+    top += height * _overlayYOffsetFactor;
+    bottom += height * _overlayYOffsetFactor;
+
+    // Clamp to display bounds
+    left = left.clamp(0.0, width);
+    right = right.clamp(0.0, width);
+    top = top.clamp(0.0, height);
+    bottom = bottom.clamp(0.0, height);
+
+    return Rect.fromLTRB(left, top, right, bottom);
   }
+
 
   Rect _toRect(dynamic box) {
     if (box is Rect) return box;
@@ -678,6 +771,7 @@ class _SmartAdvisorPageState extends State<SmartAdvisorPage>
       ),
     );
   }
+
 
   Widget _buildBottomPanel(ThemeData theme) {
     if (_isLoadingProducts) {
@@ -806,8 +900,11 @@ class _SmartAdvisorPageState extends State<SmartAdvisorPage>
         products = _eyebrowProducts;
         break;
       case MakeupStep.settingSpray:
+        products = _settingProducts;
+        break;
       case MakeupStep.eyeshadow:
-        products = _foundationProducts;
+        products = _eyeshadowProducts;
+        break;
         break;
     }
 
@@ -961,11 +1058,14 @@ class _MakeupOverlayPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    // Foundation: only on detected face, using face contour or fallback to face bounds
+    debugPrint('Overlay paint: foundation=${foundationColor?.toString()}, lipstick=${lipstickColor?.toString()}, eyebrow=${eyebrowColor?.toString()}, faceBounds=${faceBoundsDisplay?.toString()}, canvasSize=${size.width}x${size.height}');
+    // Foundation: face contour or fallback oval so user can see the effect
     if (foundationColor != null) {
       final paint = Paint()
-        ..color = foundationColor!.withAlpha((0.35 * 255).round())
-        ..style = PaintingStyle.fill;
+        // Slightly stronger alpha so foundation remains visible on varied backgrounds.
+        ..color = foundationColor!.withAlpha((0.7 * 255).round())
+        ..style = PaintingStyle.fill
+        ..isAntiAlias = true;
       if (faceContourDisplay != null && faceContourDisplay!.length >= 3) {
         final path = Path()..moveTo(faceContourDisplay!.first.dx, faceContourDisplay!.first.dy);
         for (var i = 1; i < faceContourDisplay!.length; i++) {
@@ -973,8 +1073,14 @@ class _MakeupOverlayPainter extends CustomPainter {
         }
         path.close();
         canvas.drawPath(path, paint);
-      } else if (faceBoundsDisplay != null) {
-        canvas.drawOval(faceBoundsDisplay!, paint);
+      } else {
+        // Use provided face bounds if available, otherwise draw a centered fallback oval
+        final r = faceBoundsDisplay ?? Rect.fromCenter(
+          center: Offset(size.width * 0.2, size.height * 0.4),
+          width: min(size.width, size.height) * 0.2,
+          height: min(size.width, size.height) * 0.2,
+        );
+        canvas.drawOval(r, paint);
       }
     }
 
@@ -984,52 +1090,95 @@ class _MakeupOverlayPainter extends CustomPainter {
         ..color = eyebrowColor!.withAlpha((0.92 * 255).round())
         ..style = PaintingStyle.fill;
       paint.isAntiAlias = true;
-      void drawBrow(List<Offset>? top, List<Offset>? bottom) {
+      bool drawBrow(List<Offset>? top, List<Offset>? bottom) {
         final pts = <Offset>[];
         if (top != null && top.isNotEmpty) pts.addAll(top);
         if (bottom != null && bottom.isNotEmpty) {
           pts.addAll(bottom.reversed);
         }
-        if (pts.length < 3) return;
+        if (pts.length < 3) return false;
         final path = Path()..moveTo(pts.first.dx, pts.first.dy);
         for (var i = 1; i < pts.length; i++) {
           path.lineTo(pts[i].dx, pts[i].dy);
         }
         path.close();
         canvas.drawPath(path, paint);
+        return true;
       }
-      drawBrow(leftBrowTop, leftBrowBottom);
-      drawBrow(rightBrowTop, rightBrowBottom);
+
+      final leftDrawn = drawBrow(leftBrowTop, leftBrowBottom);
+      final rightDrawn = drawBrow(rightBrowTop, rightBrowBottom);
+
+      // If no real eyebrow contours are available (e.g. on Windows/TFLite fallback),
+      // draw simple synthetic brows positioned relative to the face bounds so the
+      // eyebrow color is still visible.
+      if (!leftDrawn && !rightDrawn) {
+        final r = faceBoundsDisplay ?? Rect.fromCenter(
+          center: Offset(size.width * 0.35, size.height * 0.5),
+          width: min(size.width, size.height) * 0.4,
+          height: min(size.width, size.height) * 0.4,
+        );
+        final browY = r.top + r.height * 0.22;
+        final browW = r.width * 0.22;
+        final browH = r.height * 0.06;
+
+        final leftBrowRect = Rect.fromCenter(
+          center: Offset(r.center.dx - r.width * 0.28, browY),
+          width: browW,
+          height: browH,
+        );
+        final rightBrowRect = Rect.fromCenter(
+          center: Offset(r.center.dx + r.width * 0.28, browY),
+          width: browW,
+          height: browH,
+        );
+
+        final browPaint = Paint()
+          ..color = eyebrowColor!.withAlpha((0.92 * 255).round())
+          ..style = PaintingStyle.fill
+          ..isAntiAlias = true;
+
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(leftBrowRect, const Radius.circular(8)),
+          browPaint,
+        );
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(rightBrowRect, const Radius.circular(8)),
+          browPaint,
+        );
+      }
     }
 
-    // Lips: only on detected face, using lip contours
-    if (lipstickColor != null && (upperLipTop != null || upperLipBottom != null || lowerLipTop != null || lowerLipBottom != null)) {
-      final path = Path();
+    // Lips: lip contours or synthetic; fallback oval if no points
+    if (lipstickColor != null) {
       final all = <Offset>[];
       if (upperLipTop != null) all.addAll(upperLipTop!);
       if (upperLipBottom != null) all.addAll(upperLipBottom!);
       if (lowerLipBottom != null) all.addAll(lowerLipBottom!.reversed);
       if (lowerLipTop != null) all.addAll(lowerLipTop!.reversed);
+      final lipPaint = Paint()
+        ..color = lipstickColor!.withAlpha((0.9 * 255).round())
+        ..style = PaintingStyle.fill
+        ..isAntiAlias = true;
       if (all.length >= 3) {
-        path.moveTo(all.first.dx, all.first.dy);
+        final path = Path()..moveTo(all.first.dx, all.first.dy);
         for (var i = 1; i < all.length; i++) {
           path.lineTo(all[i].dx, all[i].dy);
         }
         path.close();
-        canvas.drawPath(
-          path,
-          Paint()
-            ..color = lipstickColor!.withAlpha((0.85 * 255).round())
-            ..style = PaintingStyle.fill
-            ,
-        );
-        // ensure anti-aliasing on the paint used for lips
-        // (create and set below to avoid using unsupported `antiAlias` setter)
-        final lipPaint = Paint()
-          ..color = lipstickColor!.withAlpha((0.85 * 255).round())
-          ..style = PaintingStyle.fill;
-        lipPaint.isAntiAlias = true;
         canvas.drawPath(path, lipPaint);
+      } else {
+        final r = faceBoundsDisplay ?? Rect.fromCenter(
+          center: Offset(size.width * 0.35, size.height * 0.55),
+          width: min(size.width, size.height) * 0.4,
+          height: min(size.width, size.height) * 0.4,
+        );
+        final lipRect = Rect.fromCenter(
+          center: Offset(r.center.dx, r.bottom - r.height * 0.25),
+          width: r.width * 0.4,
+          height: r.height * 0.12,
+        );
+        canvas.drawOval(lipRect, lipPaint);
       }
     }
   }

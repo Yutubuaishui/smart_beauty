@@ -25,6 +25,7 @@ class ProductCard extends StatelessWidget {
         onTap: onTap,
         borderRadius: BorderRadius.circular(12),
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // Product Image
@@ -33,7 +34,7 @@ class ProductCard extends StatelessWidget {
                 top: Radius.circular(12),
               ),
               child: Container(
-                height: 160,
+                height: 120,
                 width: double.infinity,
                 color: theme.colorScheme.surfaceContainerHighest,
                 child: product.imageUrl.isNotEmpty
@@ -57,8 +58,9 @@ class ProductCard extends StatelessWidget {
             ),
             // Product Info
             Padding(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.all(8),
               child: Column(
+                mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   if (product.brand != null)
@@ -67,8 +69,10 @@ class ProductCard extends StatelessWidget {
                       style: theme.textTheme.labelSmall?.copyWith(
                         color: theme.colorScheme.onSurfaceVariant,
                       ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
-                  if (product.brand != null) const SizedBox(height: 4),
+                  if (product.brand != null) const SizedBox(height: 2),
                   Text(
                     product.name,
                     style: theme.textTheme.titleSmall?.copyWith(
@@ -77,16 +81,16 @@ class ProductCard extends StatelessWidget {
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                   ),
-                  const SizedBox(height: 4),
+                  const SizedBox(height: 2),
                   Text(
                     product.description,
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant,
                     ),
-                    maxLines: 2,
+                    maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 4),
                   Row(
                     children: [
                       if (product.rating != null) ...[
